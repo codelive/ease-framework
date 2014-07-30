@@ -27,6 +27,8 @@ Lists: EASE lists get the data out of your database or a Google Sheet and print 
 
 Functions: EASE functions manage if-then logic, system utilities, cookies, authorization, file management, and more complicated functions when you need them. Plus the EASE library of functions continues to grow.
 
+For more info on the EASE syntax, check out our Reference Guide at http://goo.gl/UTA1JE
+
 == Installation ==
 1. Download the plugin from the WordPress Plugin directory
 2. Activate the Plugin through the Plugins menu in WordPress
