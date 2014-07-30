@@ -1,5 +1,5 @@
 === EASE Framework ===
-Contributors: loomtronic
+Contributors: loomtronic, cloudward
 Tags: EASE, Google, Google Drive, Google Sheets, Google Docs, Amazon, AWS, S3
 Requires at least: 3.5
 Tested up to: 3.9.1
