@@ -92,11 +92,15 @@
                         $private_folder = get_option('ease_private_folder_upload_directory');
                         
                         if($private_folder){
-                            $ease_core->set_system_config_var('private_upload_dir',$private_folder);
+                            if(is_dir($private_folder)){
+                                $ease_core->set_system_config_var('private_upload_dir',$private_folder);
+                            }
                         }
                         
                         if($public_folder){
-                            $ease_core->set_system_config_var('public_upload_dir',$public_folder);
+                            if(is_dir($public_folder)){
+                                $ease_core->set_system_config_var('public_upload_dir',$public_folder);
+                            }
                         }
                     }
                 }

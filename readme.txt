@@ -1,9 +1,9 @@
 === EASE Framework ===
-Contributors: loomtronic, cloudward
+Contributors: loomtronic, cloudward, jstrid
 Tags: EASE, Google, Google Drive, Google Sheets, Google Docs, Amazon, AWS, S3
 Requires at least: 3.5
 Tested up to: 3.9.1
-Stable tag: 3.9
+Stable tag: trunk
 License: GPLv2 
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 

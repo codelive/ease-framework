@@ -1103,18 +1103,23 @@ class ease_parser {
 		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*apply\s+([^;]+?)(\s*\.\s*([^;]+?)|)\s+(and\s*reference\s*|reference\s*|)(as\s*"\s*(.*?)\s*"|)\s*[\.;]\s*/is', $this->unprocessed_body, $matches)) {
 			// inject any global variables into the variable name or value
 			$this->interpreter->inject_global_variables($matches[1]);
-			$this->interpreter->inject_global_variables($matches[3]);
+			if(trim($matches[3])!='') {
+				$this->interpreter->inject_global_variables($matches[3]);
+				$apply_uuid = true;
+			} else {
+				$apply_uuid = false;
+			}
 			$this->interpreter->inject_global_variables($matches[6]);
 			// if a alias name was not given, use the table name
 			if(trim($matches[6])=='') {
 				$matches[6] = $matches[1];
 			}
 			// set the applied values in the globals, making sure the referenced bucket name isn't reserved
-			if(!in_array($matches[5], $this->core->reserved_buckets)) {
+			if(!in_array($matches[6], $this->core->reserved_buckets)) {
 				if($this->core->db) {
 					// query for all current key values for the referenced instance by UUID
 					$matches[1] = preg_replace('/[^a-z0-9-]+/s', '_', strtolower($matches[1]));
-					if(trim($matches[3])!='') {
+					if($apply_uuid) {
 						$query = $this->core->db->prepare("SELECT * FROM `$matches[1]` WHERE uuid=:uuid;");
 						$params = array(':uuid'=>(string)$matches[3]);
 						if($query->execute($params)) {
@@ -1127,13 +1132,14 @@ class ease_parser {
 							}
 						}
 					} else {
-						$result = $this->core->db->query("SELECT * FROM `$matches[1]` ORDER BY created_on ASC LIMIT 1;");
-						if($row = $result->fetch(PDO::FETCH_ASSOC)) {
-							// set the applied values in the globals by bucket.key (table.column)
-							foreach($row as $key=>$value) {
-								$this->core->globals["$matches[6].$key"] = $value;
+						if($result = $this->core->db->query("SELECT * FROM `$matches[1]` ORDER BY created_on ASC LIMIT 1;")) {
+							if($row = $result->fetch(PDO::FETCH_ASSOC)) {
+								// set the applied values in the globals by bucket.key (table.column)
+								foreach($row as $key=>$value) {
+									$this->core->globals["$matches[6].$key"] = $value;
+								}
+								$this->core->globals["$matches[6].id"] = &$this->core->globals["$matches[6].uuid"];
 							}
-							$this->core->globals["$matches[6].id"] = &$this->core->globals["$matches[6].uuid"];
 						}
 					}
 				}
@@ -5944,7 +5950,7 @@ class ease_parser {
 						$where_sql_string .= '(';
 						preg_match('/\s*include\s+when\s*(.*);\s*/is', $matches[0], $matches);						
 						$remaining_condition = $matches[1];
-						while(preg_match('/^(&&|&|\|\||and\s+|or\s+|xor\s+){0,1}\s*(!|not\s+){0,1}\s*([(\s]*)([^;]+?)\s*(===|==|=|!=|!==|>|>=|<|<=|<>|is|is\s*not|contains\s*exactly|contains|~|regexp|regex|like|ilike|rlike)\s*"(.*?)"\s*(if\s*set){0,1}([)\s]*)/is', $remaining_condition, $inner_matches)) {
+						while(preg_match('/^(&&|&|\|\||and\s+|or\s+|xor\s+){0,1}\s*(!|not\s+){0,1}\s*([(\s]*)([^;]+?)\s*(===|==|=|!=|!==|>|>=|<|<=|<>|is\s*not|is|contains\s*exactly|contains|~|regexp|regex|like|ilike|rlike)\s*"(.*?)"\s*(if\s*set){0,1}([)\s]*)/is', $remaining_condition, $inner_matches)) {
 							$this->interpreter->inject_global_variables($inner_matches[4]);
 							$table_column_parts = explode('.', $inner_matches[4], 2);
 							if(count($table_column_parts)==2) {
@@ -5991,12 +5997,12 @@ class ease_parser {
 								$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] TRUE $inner_matches[8] ";
 							} elseif(($table==$sql_table_name && @in_array($column, $existing_columns)) || @in_array($column, $existing_relation_columns[$table])) {
 								// the directive contained a valid column name to compare
-								// add the comparison to the SQL WHERE clause, maintaining any grouped conditional logic
+								// add the comparison clause to the SQL WHERE directive, maintaining any grouped conditional logic
 								if($inner_matches[5]=='contains') {
 									$value = $this->core->db->quote('%' . $inner_matches[6] . '%');
 									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] UPPER(`$table`.`$column`) LIKE UPPER($value) $inner_matches[8] ";
 								} else {
-									if(preg_match('/^[0-9\.-]+$/', $inner_matches[6], $number_matches) && preg_match('/^(=|<>|>|>=|<|<=)$/', $inner_matches[5], $comparitor_matches)) {
+									if(preg_match('/^\s*(-|)[0-9\s\.,]+$/is', $inner_matches[6], $number_matches) && preg_match('/^(=|<>|>|>=|<|<=)$/', $inner_matches[5], $comparitor_matches)) {
 										$value = $inner_matches[6];
 									} else {
 										$value = $this->core->db->quote($inner_matches[6]);
@@ -6005,7 +6011,7 @@ class ease_parser {
 								}
 							} else {
 								// the directive did not contain a valid column name to compare
-								// add the comparison to the SQL WHERE clause but compare the column value as a blank string, maintaining any grouped conditional logic
+								// add the comparison clause to the SQL WHERE directive, treating the column value as a blank string, maintaining any grouped conditional logic
 								if($inner_matches[5]=='contains') {
 									$value = $this->core->db->quote('%' . $inner_matches[6] . '%');
 									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] '' LIKE UPPER($value) $inner_matches[8] ";
@@ -6059,10 +6065,15 @@ class ease_parser {
 
 				// SHOW *NUMBER* ROWS PER PAGE
 				$rows_per_page = null;
+				$rows_of_sql_table = null;
+				$total_pages = null;
 				$unprocessed_start_list_block = preg_replace_callback(
-					'/\s*show\s*([0-9]+)\s*rows\s*per\s*page\s*;\s*/is',
-					function($matches) use (&$rows_per_page) {
+					'/\s*show\s*([0-9]+)\s*([^;]+?)\s*per\s*page\s*;\s*/is',
+					function($matches) use (&$rows_per_page, &$rows_of_sql_table) {
 						$rows_per_page = $matches[1];
+						if(strtolower($matches[2])!='rows') {
+							$rows_of_sql_table = preg_replace('/[^a-z0-9]+/s', '_', strtolower($matches[2]));
+						}
 						return '';
 					},
 					$unprocessed_start_list_block
@@ -6072,7 +6083,7 @@ class ease_parser {
 				$total_var_by_column = array();
 				$page_total_var_by_column = array();
 				$unprocessed_start_list_block = preg_replace_callback(
-					'/\s*set\s+(.*?)\s+to(\s+page|)\s+total\s+of\s+([^;]+)\s*;\s*/is',
+					'/\s*set\s+(.*?)\s+to(\s+page|)\s+total\s+of\s+([^;]+?)\s*;\s*/is',
 					function($matches) use (&$total_var_by_column, &$page_total_var_by_column, &$referenced_columns, $sql_table_name) {
 						$this->interpreter->inject_global_variables($matches[1]);
 						$this->interpreter->inject_global_variables($matches[3]);
@@ -6100,7 +6111,7 @@ class ease_parser {
 				// SORT BY *SQL-TABLE-COLUMN* ASCENDING / DESCENDING
 				$order_by_sql_string = '';
 				$unprocessed_start_list_block = preg_replace_callback(
-					'/\s*(sort|order)\s+by\s+([^;]+)\s*;\s*/is',
+					'/\s*(sort|order)\s+by\s+([^;]+?)\s*;\s*/is',
 					function($matches) use (&$order_by_sql_string) {
 						$this->interpreter->inject_global_variables($matches[2]);
 						$context_stack = $this->interpreter->extract_context_stack($matches[2]);
@@ -6302,20 +6313,75 @@ class ease_parser {
 					if(strlen(@$_REQUEST['index'])==32) {
 						// the page index was requested as the UUID of a record expected to be in the list
 						// show the page that includes the referenced record
-						foreach($list_rows as $row_key=>$row) {
-							if($row[$sql_table_name . '.uuid']==$_REQUEST['index']) {
-								$indexed_page = ceil(($row_key + 1) / $rows_per_page);
-								break;
+						if($rows_of_sql_table!=null) {
+							// this is a paged relation list
+							$indexed_page = null;
+							// calculate the total number of pages
+							$total_pages = 1;
+							$current_page_item_count = 0;
+							$current_paged_item_uuid = '';
+							foreach($list_rows as $row_key=>$row) {
+								if((!isset($row["$rows_of_sql_table.uuid"])) || ($row["$rows_of_sql_table.uuid"]!=$current_paged_item_uuid)) {
+									// this is a new paged item
+									if($current_page_item_count==$rows_per_page) {
+										// the current page is full... start a new page
+										$total_pages++;
+										$current_page_item_count = 1;
+									} else {
+										$current_page_item_count++;
+									}
+									$current_paged_item_uuid = $row["$rows_of_sql_table.uuid"];
+								}
+								if(is_null($indexed_page) && $row[$sql_table_name . '.uuid']==$_REQUEST['index']) {
+									$indexed_page = $total_pages;
+								}
+							}
+							if(!$indexed_page) {
+								$indexed_page = 1;
+							}
+						} else {
+							foreach($list_rows as $row_key=>$row) {
+								if($row[$sql_table_name . '.uuid']==$_REQUEST['index']) {
+									$indexed_page = ceil(($row_key + 1) / $rows_per_page);
+									break;
+								}
 							}
 						}
 						reset($list_rows);
 					} else {
 						$indexed_page = intval(@$_REQUEST['index']);
-						if((@$_REQUEST['index']=='last') || (($indexed_page * $rows_per_page) > $this->local_variables['numberofrows'])) {
-							// the requested page is past the end of the list... default to the last page
-							$indexed_page = ceil($this->local_variables['numberofrows'] / $rows_per_page);
-						} elseif($indexed_page==0 || $rows_per_page==0) {
-							$indexed_page = 1;
+						if($rows_of_sql_table!=null) {
+							// calculate the total number of pages
+							$total_pages = 1;
+							$current_page_item_count = 0;
+							$current_paged_item_uuid = '';
+							foreach($list_rows as $row_key=>$row) {
+								if((!isset($row["$rows_of_sql_table.uuid"])) || ($row["$rows_of_sql_table.uuid"]!=$current_paged_item_uuid)) {
+									// this is a new paged item
+									if($current_page_item_count==$rows_per_page) {
+										// the current page is full... start a new page
+										$total_pages++;
+										$current_page_item_count = 1;
+									} else {
+										$current_page_item_count++;
+									}
+									$current_paged_item_uuid = $row["$rows_of_sql_table.uuid"];
+								}
+							}							
+							// this is a paged relation list
+							if((@strtolower($_REQUEST['index'])=='last') || ($indexed_page > $total_pages)) {
+								// the requested page is either past the end of the list or explicitly the last page... show the last page
+								$indexed_page = $total_pages;
+							} elseif($indexed_page==0 || $rows_per_page==0) {
+								$indexed_page = 1;
+							}
+						} else {
+							if((@strtolower($_REQUEST['index'])=='last') || (($indexed_page * $rows_per_page) > $this->local_variables['numberofrows'])) {
+								// the requested page is either past the end of the list or explicitly the last page... show the last page
+								$indexed_page = ceil($this->local_variables['numberofrows'] / $rows_per_page);
+							} elseif($indexed_page==0 || $rows_per_page==0) {
+								$indexed_page = 1;
+							}
 						}
 					}
 					// remove the page index from the query string in the REQUEST URI
@@ -6368,7 +6434,7 @@ class ease_parser {
 						// pagers will be shown... include the default pager style once per request
 						$this->inject_pager_style();
 						// build the pager html
-						$pager_html = $this->build_pager_html($rows_per_page, $this->local_variables['numberofrows'], $indexed_page, $query_string_no_index);
+						$pager_html = $this->build_pager_html($rows_per_page, $this->local_variables['numberofrows'], $indexed_page, $query_string_no_index, $total_pages);
 						// show the top pager if set
 						if(isset($show_pagers['top'])) {
 							if(isset($save_to_global_variable)) {
@@ -6693,7 +6759,7 @@ class ease_parser {
 									$value = $this->core->db->quote('%' . $inner_matches[6] . '%');
 									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] UPPER(`$table`.`$column`) LIKE UPPER($value) $inner_matches[8] ";
 								} else {
-									if(preg_match('/^[0-9\.-]+$/', $inner_matches[6], $number_matches) && preg_match('/^(=|<>|>|>=|<|<=)$/', $inner_matches[5], $comparitor_matches)) {
+									if(preg_match('/^\s*(-|)[0-9\s\.,]+$/is', $inner_matches[6], $number_matches) && preg_match('/^(=|<>|>|>=|<|<=)$/', $inner_matches[5], $comparitor_matches)) {
 										$value = $inner_matches[6];
 									} else {
 										$value = $this->core->db->quote($inner_matches[6]);
@@ -9232,11 +9298,14 @@ class ease_parser {
 		}
 	}
 
-	function build_pager_html($rows_per_page, $total_rows, $current_page, $query_string_without_index) {
-		if($rows_per_page > 0) {
-			$total_pages = ceil($total_rows / $rows_per_page);
-		} else {
-			$total_pages = 1;
+	function build_pager_html($rows_per_page, $total_rows, $current_page, $query_string_without_index, $total_pages=null) {
+		if($total_pages==null) {
+			// the number of pages was not precalculated, calculate it now
+			if($rows_per_page > 0) {
+				$total_pages = ceil($total_rows / $rows_per_page);
+			} else {
+				$total_pages = 1;
+			}
 		}
 		if($total_pages > 1) {
 			if(trim($query_string_without_index)!='') {

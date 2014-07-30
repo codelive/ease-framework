@@ -637,7 +637,7 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
                 }
                 
                 if(!$private_dir){
-                    $private_dir = $upload_directory . DIRECTORY_SEPARATOR . "private";
+                    $private_dir = dirname($_SERVER['DOCUMENT_ROOT']) . DIRECTORY_SEPARATOR . "ease_framework_uploads_private";
                     if(!is_dir($private_dir)){
                         @mkdir($private_dir);
                     }
@@ -654,12 +654,17 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
                             <div class="content-upload-dir-one plugin-settings" style="display:none">
                             <table class="form-table">
                             <tr valign="top">
-                            <th scope="row">Public Folder</th>
+                            <th scope="row">Public Folder<?php if(!is_dir($public_dir)){
+                                echo "<BR>Could not create/locate public directory, you may want to use Amazon or Google Drive for Uploads<BR>";   
+                            } ?></th>
                             <td><input type="text" name="ease_public_folder_upload_directory" value="<?php echo $public_dir ?>" /></td>
                             </tr>
                             <tr valign="top">
-                            <th scope="row">Private Folder</th>
-                            <td><input type="text" name="ease_private_folder_upload_directory" value="<?php echo $private_dir ?>" /></td>
+                            <th scope="row">Private Folder
+                            </th>
+                            <td><?php if(!is_dir($private_dir)){
+                                echo "<BR>Could not create/locate private directory, you may want to use Amazon or Google Drive for Uploads<BR>";   
+                            } ?><BR><input type="text" name="ease_private_folder_upload_directory" value="<?php echo $private_dir ?>" /></td>
                             </tr>
                                 <tr valign="top" style="padding:0px">
                                     <th colspan="2" style="padding:0px"><h4>Code Examples</h4></th>
