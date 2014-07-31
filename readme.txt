@@ -8,7 +8,7 @@ License: GPLv2
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
 Build custom forms/lists in WP Pages/Posts to read/write to Google Sheets, Cloud SQL & MySQL and up/download files to S3 or Google Drive
- 
+   
 == Description ==
   
 The Cloudward EASE framework is an HTML-like, markup language that allows you to:
