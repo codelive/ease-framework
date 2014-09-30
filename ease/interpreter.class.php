@@ -50,6 +50,7 @@ class ease_interpreter {
 					$bucket = '';
 					$key = $matches[1];
 				}
+				$key_lower = strtolower($key);
 				// extract any context from the variable reference
 				$context_stack = $this->extract_context_stack($key);
 				if($additional_context!==null) {
@@ -62,9 +63,21 @@ class ease_interpreter {
 				}
 				// retrieve the value to inject based on the bucket type
 				if($bucket=='session') {
-					$value = @$_SESSION[$key];
+					if(isset($_SESSION[$key])) {
+						$value = $_SESSION[$key];
+					} elseif(isset($_SESSION[$key_lower])) {						
+						$value = $_SESSION[$key_lower];
+					} else {
+						$value = '';
+					}
 				} elseif($bucket=='cookie') {
-					$value = @$_COOKIE[$key];
+					if(isset($_COOKIE[$key])) {
+						$value = $_COOKIE[$key];
+					} elseif(isset($_COOKIE[$key_lower])) {						
+						$value = $_COOKIE[$key_lower];
+					} else {
+						$value = '';
+					}
 				} elseif($bucket=='post') {
 					$value = @$_POST[$key];
 				} elseif($bucket=='url') {
@@ -375,7 +388,7 @@ class ease_interpreter {
 						$context_stack[] = array('context'=>$context, 'adjustment_seconds'=>$adjustment_value * $adjustment_modifier);
 						break;
 				}
-			} elseif(($context=='time' || $context=='date') && isset($matches[8]) && $matches[8]!='') {
+			} elseif(($context=='time' || $context=='date' || $context=='pdate' || $context=='phpdate') && isset($matches[8]) && $matches[8]!='') {
 				// the context was a date or time with a format string.  ex:  <# system.timestamp as date "M/D/Y" #>
 				$context_stack[] = array('context'=>$context, 'format_string'=>$matches[8]);
 			} elseif($context=='hash') {
@@ -426,6 +439,7 @@ class ease_interpreter {
 			end($context_stack);
 			while($context = array_pop($context_stack)) {
 				if(is_array($context)) {
+					// this is a context with additional parameters
 					switch($context['context']) {
 						case 'hash':
 							$string = hash($context['algo'], $context['salt'] . $string);
@@ -583,33 +597,103 @@ class ease_interpreter {
 							$string = str_replace('ss', str_pad($seconds, 2, '0', STR_PAD_LEFT), $string);
 							$string = str_replace('s', $seconds, $string);
 							break;
+						case 'pdate':
+						case 'phpdate':
+							$timestamp = intval($string);
+							$string = date($context['format_string'], $timestamp);
 						case 'date':
 							// breaking the PHP standard for date format strings to support "M/D/Y h:mm:ss A" instead
 							$timestamp = intval($string);
-							$month = date('m', $timestamp);
-							$day = date('d', $timestamp);
-							$year = date('Y', $timestamp);
-							$hour = date('g', $timestamp);
-							$hour_24 = date('H', $timestamp);
-							$minutes = date('i', $timestamp);
-							$seconds = date('s', $timestamp);
-							$ampm = date('A', $timestamp);
-							$string = $context['format_string'];
-							$string = str_replace('M', $month, $string);
-							$string = str_replace('D', $day, $string);
-							$string = str_replace('Y', $year, $string);
-							$string = str_replace('hh', $hour_24, $string);
-							$string = str_replace('h', $hour, $string);
-							$string = str_replace('mm', $minutes, $string);
-							$string = str_replace('m', intval($minutes), $string);
-							$string = str_replace('ss', $seconds, $string);
-							$string = str_replace('s', intval($seconds), $string);
-							$string = str_replace('A', $ampm, $string);
+							// process the date format string for replacement tokens
+							$string = '';
+							while(strlen($context['format_string']) > 0) {
+								// check for 2 character replacement tokens at the start of the remaining format string
+								switch(substr($context['format_string'], 0, 2)) {
+									case 'MM':
+										// full month name
+										$string .= date('F', $timestamp);
+										$context['format_string'] = substr($context['format_string'], 2);
+										continue;
+									case 'DD':
+										// day of month with suffix
+										$string .= date('jS', $timestamp);
+										$context['format_string'] = substr($context['format_string'], 2);
+										continue;
+									case 'hh':
+										// 2 digit hours
+										$string .= date('H', $timestamp);
+										$context['format_string'] = substr($context['format_string'], 2);
+										continue;
+									case 'mm':
+										// 2 digit minutes
+										$string .= date('i', $timestamp);
+										$context['format_string'] = substr($context['format_string'], 2);
+										continue;
+									case 'ss':
+										// 2 digit seconds
+										$string .= date('s', $timestamp);
+										$context['format_string'] = substr($context['format_string'], 2);
+										continue;
+									default:
+										// a 2 character replacement token was not found at the start of the remaining format string
+								}
+								// check for 1 character replacement tokens at the start of the remaining format string
+								switch(substr($context['format_string'], 0, 1)) {
+									case 'M':
+										// 2 digit month number
+										$string .= date('m', $timestamp);
+										$context['format_string'] = substr($context['format_string'], 1);
+										continue;
+									case 'D':
+										// 2 digit day of month number
+										$string .= date('d', $timestamp);
+										$context['format_string'] = substr($context['format_string'], 1);
+										continue;
+									case 'Y':
+										// year number
+										$string .= date('Y', $timestamp);
+										$context['format_string'] = substr($context['format_string'], 1);
+										continue;
+									case 'h':
+										// hour number
+										$string .= date('g', $timestamp);
+										$context['format_string'] = substr($context['format_string'], 1);
+										continue;                 
+									case 'm':
+									    // minute number
+										$string .= intval(date('i', $timestamp));
+										$context['format_string'] = substr($context['format_string'], 1);
+										continue;                 
+									case 's':
+									    // second number
+										$string .= intval(date('s', $timestamp));
+										$context['format_string'] = substr($context['format_string'], 1);
+										continue;                 
+									case 'A':
+										// AM or PM
+										$string .= date('A', $timestamp);
+										$context['format_string'] = substr($context['format_string'], 1);
+										continue;
+									case '\\':
+										// an escape character was at the start of the remaining format string
+										// use the following character raw without replacing its token value
+										$string .= substr($context['format_string'], 1, 1);
+										$context['format_string'] = substr($context['format_string'], 2);
+									default:
+										// a valid token wasn't found, use the raw 1st character
+										$string .= substr($context['format_string'], 0, 1);
+										$context['format_string'] = substr($context['format_string'], 1);
+								}
+							}
 							break;
 						default:
 					}
 				} else {
+					// this is a context without additional parameters
 					switch($context) {
+						case 'pre':
+							$string = htmlspecialchars($string);
+							break;
 						case 'html':
 						case 'web':
 						case 'webpage':
@@ -625,10 +709,12 @@ class ease_interpreter {
 							break;
 						case 'dollars':
 						case 'usd':
+						case '$':
 							$string = '$ ' . number_format(round(preg_replace('/[^0-9\.-]+/', '', $string), 2), 2, '.', ',');
 							break;
 						case 'euros':
 						case 'eur':
+						case '€':
 							$string = '€ ' . number_format(round(preg_replace('/[^0-9\.-]+/', '', $string), 2), 2, ',', '.');
 							break;
 						case 'number':

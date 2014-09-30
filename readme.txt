@@ -1,33 +1,56 @@
 === EASE Framework ===
 Contributors: loomtronic, cloudward, jstrid
-Tags: EASE, Google, Google Drive, Google Sheets, Google Docs, Amazon, AWS, S3
+Tags: Amazon, AWS, EASE, Google, Google Docs, Google Drive, Google Sheets, S3, Forms, Membership, Database, eCommerce, Storage, Google Cloud, spreadsheets, fields
 Requires at least: 3.5
-Tested up to: 3.9.1
+Tested up to: 4.0
 Stable tag: trunk
 License: GPLv2 
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
-Build custom forms/lists in WordPress Pages/Posts to read/write to Google Sheets, Cloud SQL & MySQL and up/download files to S3 or Google Drive
+Customizable integration with Google Sheets, Google Cloud, and Amazon S3 without having to hire a hardcore developer. 
 
 == Description ==
 
-The Cloudward EASE framework is an HTML-like, markup language that allows you to:
+The Cloudward EASE Framework for WordPress is an HTML-like, markup language that makes it easy to: 
 
-Create complex and beautifully designed web apps.
-Access Google Drive, Amazon S3 and your WordPress Database.
-With EASE, you can easily set up your website, customize it, and integrate with Google and Sheets. EASE is also open-source and can grow with your business.
+-- Access Google Drive, Amazon S3, and your WordPress database
+-- Build custom forms and lists in Wordpress Pages and Posts
+-- Build protected membership content and charge for access
+-- Build eCommerce listings using Google Sheets and accept payments
+-- Use Google Sheets as your site database, easy to update and manage
+-- Read and write to Google Sheets, Cloud SQL & MySQL
+-- Upload and download files to S3 or Google Drive
+-- Create custom fields driven by Google Sheets
 
-EASE is easy to install and customize, and it provides a strong, flexible foundation to build your business on.
+EASE is easy to install and customize. It's also open-source, which provides a strong, flexible foundation to build your business on.
 
-Tags: You just put EASE tags into your forms and the EASE framework will set up your database for you.
+Easily integrate your existing WordPress app with: 
+-- Google Cloud SQL
+-- Google Cloud Storage
+-- Google Sheets
 
-Forms: EASE forms look like regular HTML forms, but the EASE framework tells your database what to do or Google Sheets where to save the data.
+See what you can do at our demo site at http://www.momsbakeryonline.com
+Watch this video to see how easy it is to get started: https://www.youtube.com/watch?v=FhJv-GYYJPM
 
-Lists: EASE lists get the data out of your database or a Google Sheet and print it on the page.
 
-Functions: EASE functions manage if-then logic, system utilities, cookies, authorization, file management, and more complicated functions when you need them. Plus the EASE library of functions continues to grow.
+TAGS
 
-For more info on the EASE syntax, check out our Reference Guide at http://goo.gl/UTA1JE
+You just put EASE tags into your forms and the EASE framework will set up your database for you.
+
+FORMS
+
+EASE forms look like regular HTML forms, but the EASE framework tells your database what to do or Google Sheets where to save the data.
+
+LISTS
+
+EASE lists get the data out of your database or a Google Sheet and print it on the page. Great for directory and membership listings.
+
+FUNCTIONS
+
+EASE functions manage if-then logic, system utilities, cookies, authorization, file management, and more complicated functions when you need them. Plus, the EASE library of functions continues to grow.
+
+For more info on the EASE syntax, check out our reference guide: http://goo.gl/UTA1JE
+
 
 == Installation ==
 1. Download the plugin from the WordPress Plugin directory
@@ -46,3 +69,19 @@ The EASE Framework connects to your local database. If your hosting provider loc
 == Changelog ==
 = 0.1.0 =
 * Initial Release
+
+= 0.1.1 =
+* Upgraded EASE Framework to 2.3.7
+* Added ability to install script helper collections
+
+= 0.1.2 =
+* Add EASE Framework fixes
+* Added additional helper scripts for surveys, contacts, membership site, store and more
+* Certified with WP 4.0
+* Upgraded EASE Framework to 2.6
+
+== Upgrade Notice ==
+
+= 0.1.2 =
+The new version contants bug fixes and helper scripts. Helper Scripts are example application pages writen in
+EASE. Scripts include: surveys, contacts, Membership site, PayPal Store, File Uploads and more.

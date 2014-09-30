@@ -168,17 +168,17 @@ class ease_parser {
 			$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
 			return;
 		}
-		// check for single line comments starting the EASE block
-		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*\/\/(\V*)/is', $this->unprocessed_body, $matches)) {
-			// remove the comment line from the start of the EASE block and continue processing the remaining tag
-			$this->unprocessed_body = $this->core->ease_block_start . ' ' . substr($this->unprocessed_body, strlen($matches[0]));
-			return $this->process_ease_block();
-		}
 		// check for multi-line EASE comments
 		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*:(.*?):\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 			// remove the multi-line EASE comment from the unprocessed body
 			$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
 			return;
+		}
+		// check for single line comments starting the EASE block
+		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*\/\/(\V*)/is', $this->unprocessed_body, $matches)) {
+			// remove the comment line from the start of the EASE block and continue processing the remaining tag
+			$this->unprocessed_body = $this->core->ease_block_start . ' ' . substr($this->unprocessed_body, strlen($matches[0]));
+			return $this->process_ease_block();
 		}
 
 		//	find the first valid EASE command in the EASE block
@@ -242,13 +242,13 @@ class ease_parser {
 		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*(grant|give|permit|allow|revoke)\s*access\s*to\s+([^;]+?)\s*([;]{0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '|;)\s*/is', $this->unprocessed_body, $matches)) {
 			// inject any global variables into the session.key lock reference
 			$this->interpreter->inject_global_variables($matches[2]);
-			$matches[2] = preg_replace('/[^a-z0-9]+/is', '_', strtolower($matches[2]));
+			$matches[2] = trim(preg_replace('/[^a-z0-9]+/is', '_', strtolower($matches[2])), '_');
 			switch(strtolower($matches[1])) {
 				case 'revoke':
-					unset($_SESSION[$matches[2]]);
+					unset($_SESSION['ease_memberships.' . $matches[2]]);
 					break;
 				default:
-					$_SESSION[$matches[2]] = 'unlocked';
+					$_SESSION['ease_memberships.' . $matches[2]] = 'unlocked';
 					break;
 			}
 			// remove the tag from the remaining unprocessed body
@@ -261,8 +261,8 @@ class ease_parser {
 		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*restrict\s*access\s*to\s+([^;]+?)\s*using\s*(.*?)\s*[\.;]{0,1}\s*(?<!' . preg_quote($this->core->global_reference_end, '/') . ')\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 			// inject any global variables into the session.key lock reference, and login page
 			$this->interpreter->inject_global_variables($matches[1]);
-			$matches[1] = preg_replace('/[^a-z0-9]+/is', '_', strtolower($matches[1]));
-			if(!isset($_SESSION[$matches[1]]) || !$_SESSION[$matches[1]]) {
+			$matches[1] = trim(preg_replace('/[^a-z0-9]+/is', '_', strtolower($matches[1])), '_');
+			if(!isset($_SESSION['ease_memberships.' . $matches[1]]) || !$_SESSION['ease_memberships.' . $matches[1]]) {
 				// the current user is restricted from accessing this page any further, redirect to an authentication page or the homepage
 				$this->interpreter->inject_global_variables($matches[2]);
 				// add the restricted page URL to the query string of the access handler page URL
@@ -327,8 +327,20 @@ class ease_parser {
 		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*include\s*"\s*(.*?)\s*"\s*[\.;]{0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 			// inject any global variables into the supplied INCLUDE path
 			$this->interpreter->inject_global_variables($matches[1]);
-			// get the content of the included file... don't allow doubly including the local header.espx or footer.espx files
-			if($matches[1]!='header.espx' && $matches[1]!='footer.espx') {
+			if($this->core->include_disabled) {
+				// include commands have been disabled
+				$included_file_content = '';
+			} elseif(isset($this->core->include_from_sql) && trim($this->core->include_from_sql)!='') {
+				// SQL was provided to pull include content from the database
+				$query = $this->core->db->prepare($this->core->include_from_sql);
+				if($query->execute(array(':path'=>$matches[1]))) {
+					if($row = $query->fetch(PDO::FETCH_ASSOC)) {
+						list($key, $val) = each($row);
+						$included_file_content = $val;
+					}
+				}
+			} elseif($matches[1]!='header.espx' && $matches[1]!='footer.espx') {
+				// the include path will be treated as a file path, and isn't doubly including the local header.espx or footer.espx
 				$include_file_path = str_replace('/', DIRECTORY_SEPARATOR, $matches[1]);
 				if(substr($matches[1], 0, 1)=='/' && file_exists($this->core->application_root . $include_file_path)) {
 					$included_file_content = file_get_contents($this->core->application_root . $include_file_path);
@@ -433,188 +445,191 @@ class ease_parser {
 				$this->unprocessed_body = $this->core->ease_block_start . ' ' . $unprocessed_import_block . ' ' . $this->core->ease_block_start . substr($this->unprocessed_body, strlen($matches[0]));
 			} else {
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
-			}
-			// load the sheet meta data
-			if($spreadsheet_name) {
-				$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($spreadsheet_name, $worksheet_name);
-				if(isset($spreadsheet_meta_data['id'])) {
-					$spreadsheet_id = $spreadsheet_meta_data['id'];
+			}	
+			// only import the spreadsheet if the DB hasn't been disabled
+			if(!$this->core->db_disabled) {
+				// load the sheet meta data
+				if($spreadsheet_name) {
+					$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($spreadsheet_name, $worksheet_name);
+					if(isset($spreadsheet_meta_data['id'])) {
+						$spreadsheet_id = $spreadsheet_meta_data['id'];
+					}
+				} elseif($spreadsheet_id) {
+					$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($spreadsheet_id, $worksheet_name);
 				}
-			} elseif($spreadsheet_id) {
-				$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($spreadsheet_id, $worksheet_name);
-			}
-			// initialize a Google Drive API client for Google Drive Spreadsheets
-			require_once 'ease/lib/Spreadsheet/Autoloader.php';
-			$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
-			$serviceRequest = new Google\Spreadsheet\DefaultServiceRequest($request);
-			Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
-			$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
-			// determine if the Google Drive Spreadsheet was referenced by name or ID
-			if(isset($spreadsheet_id) && $spreadsheet_id!='') {
-				// load Google Drive Spreadsheet by ID
-				try {
-					$spreadSheet = $spreadsheetService->getSpreadsheetById($spreadsheet_id);
-				} catch(Exception $e) {
-					// error loading spreadsheet by ID
-				}
-				if($spreadSheet===null) {
-					$this->output_buffer .= "<div style='margin:5px; color:red;'>Error!  Unable to load Google Drive Spreadsheet by ID: " . htmlspecialchars($spreadsheet_id) . "</div>";
+				// initialize a Google Drive API client for Google Drive Spreadsheets
+				require_once 'ease/lib/Spreadsheet/Autoloader.php';
+				$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
+				$serviceRequest = new Google\Spreadsheet\DefaultServiceRequest($request);
+				Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
+				$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
+				// determine if the Google Drive Spreadsheet was referenced by name or ID
+				if(isset($spreadsheet_id) && $spreadsheet_id!='') {
+					// load Google Drive Spreadsheet by ID
+					try {
+						$spreadSheet = $spreadsheetService->getSpreadsheetById($spreadsheet_id);
+					} catch(Exception $e) {
+						// error loading spreadsheet by ID
+					}
+					if($spreadSheet===null) {
+						$this->output_buffer .= "<div style='margin:5px; color:red;'>Error!  Unable to load Google Drive Spreadsheet by ID: " . htmlspecialchars($spreadsheet_id) . "</div>";
+						return;
+					}
+				} elseif(isset($spreadsheet_name) && $spreadsheet_name!='') {
+					// load Google Drive Spreadsheet by Title
+					$spreadsheetFeed = $spreadsheetService->getSpreadsheets();
+					$spreadSheet = $spreadsheetFeed->getByTitle($spreadsheet_name);
+					if($spreadSheet===null) {
+						$this->output_buffer .= "<div style='margin:5px; color:red;'>Error!  Unable to load Google Drive Spreadsheet by Title: " . htmlspecialchars($spreadsheet_name) . "</div>";
+						return;
+					}
+				} else {
+					$this->output_buffer .= "<div style='margin:5px; color:red;'>Error!  Import Google Drive Spreadsheet → Missing reference to Spreadsheet ID or Title</div>";
 					return;
 				}
-			} elseif(isset($spreadsheet_name) && $spreadsheet_name!='') {
-				// load Google Drive Spreadsheet by Title
-				$spreadsheetFeed = $spreadsheetService->getSpreadsheets();
-				$spreadSheet = $spreadsheetFeed->getByTitle($spreadsheet_name);
-				if($spreadSheet===null) {
-					$this->output_buffer .= "<div style='margin:5px; color:red;'>Error!  Unable to load Google Drive Spreadsheet by Title: " . htmlspecialchars($spreadsheet_name) . "</div>";
-					return;
+				// if a worksheet was named, use it, otherwise use the first sheet
+				$worksheetFeed = $spreadSheet->getWorksheets();
+				if($worksheet_name) {
+					$worksheet = $worksheetFeed->getByTitle($worksheet_name);
+					if($worksheet===null) {
+						$this->output_buffer .= "<div style='margin:5px; color:red;'>Error!  Unable to load worksheet named: " . htmlspecialchars($worksheet_name) . "</div>";
+						return;
+					}
+				} else {
+					$worksheet = $worksheetFeed->getFirstSheet();
 				}
-			} else {
-				$this->output_buffer .= "<div style='margin:5px; color:red;'>Error!  Import Google Drive Spreadsheet → Missing reference to Spreadsheet ID or Title</div>";
-				return;
-			}
-			// if a worksheet was named, use it, otherwise use the first sheet
-			$worksheetFeed = $spreadSheet->getWorksheets();
-			if($worksheet_name) {
-				$worksheet = $worksheetFeed->getByTitle($worksheet_name);
-				if($worksheet===null) {
-					$this->output_buffer .= "<div style='margin:5px; color:red;'>Error!  Unable to load worksheet named: " . htmlspecialchars($worksheet_name) . "</div>";
-					return;
+				// request all cell data from the worksheet
+				$cellFeed = $worksheet->getCellFeed();
+				$cell_entries = $cellFeed->getEntries();
+				$cells_by_row_by_column_letter = array();
+				foreach($cell_entries as $cell_entry) {
+					$cell_title = $cell_entry->getTitle();
+					preg_match('/([A-Z]+)([0-9]+)/', $cell_title, $inner_matches);
+					$cells_by_row_by_column_letter[$inner_matches[2]][$inner_matches[1]] = $cell_entry->getContent();
+					$referenced_sheet_column_letters[$inner_matches[1]] = true;
 				}
-			} else {
-				$worksheet = $worksheetFeed->getFirstSheet();
-			}
-			// request all cell data from the worksheet
-			$cellFeed = $worksheet->getCellFeed();
-			$cell_entries = $cellFeed->getEntries();
-			$cells_by_row_by_column_letter = array();
-			foreach($cell_entries as $cell_entry) {
-				$cell_title = $cell_entry->getTitle();
-				preg_match('/([A-Z]+)([0-9]+)/', $cell_title, $inner_matches);
-				$cells_by_row_by_column_letter[$inner_matches[2]][$inner_matches[1]] = $cell_entry->getContent();
-				$referenced_sheet_column_letters[$inner_matches[1]] = true;
-			}
-			// query for current columns for the SQL Table
-			$result = $this->core->db->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='$sql_table_name' AND TABLE_SCHEMA=database();");
-			$existing_sql_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-			if(!is_array($existing_sql_columns) || count($existing_sql_columns)==0) {
-				$preserve_existing_records = false;
-			}
-			// build sql query strings and parameter maps
-			$uuid_column = null;
-			$default_query_params = array();
-			$created_sql_columns = array();
-			$column_header_by_letter = array();
-			$column_letter_by_header = array();
-			$create_columns_sql = '';
-			$query_param_map_sql = '';
-			if($sheet_has_header_row) {
-				// process the header row (row 1) from the sheet
-				foreach($cells_by_row_by_column_letter[1] as $column_letter=>$column_header) {
-					$default_query_params[":$column_letter"] = '';
-					$column_header = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($column_header)), '_');
-					$column_header_by_letter[$column_letter] = $column_header;
-					$column_letter_by_header[$column_header] = $column_letter;
-					if($column_header=='ease_row_id') {
-						// special EASE interoperability handling of the "EASE Row ID" column
-						$uuid_column = $column_letter;
-					} else {
-						// check if this column or letter has been explicitly mapped
-						if(isset($sheet_column_header_to_sql_column_map[$column_header])) {
-							// this column has been explicitly mapped by column header
-							if(!in_array($sheet_column_header_to_sql_column_map[$column_header], $this->core->reserved_sql_columns) && !isset($created_sql_columns[$sheet_column_header_to_sql_column_map[$column_header]])) {
-								$create_columns_sql .= ", `{$sheet_column_header_to_sql_column_map[$column_header]}` text NOT NULL default ''";
-								$created_sql_columns[$sheet_column_header_to_sql_column_map[$column_header]] = true;
-							}
-							$query_param_map_sql .= ", `{$sheet_column_header_to_sql_column_map[$column_header]}`=:$column_letter";
-						} elseif(isset($sheet_column_letter_to_sql_column_map[$column_letter])) {
-							// this column has been explicitly mapped by column letter
-							if(!in_array($sheet_column_letter_to_sql_column_map[$column_letter], $this->core->reserved_sql_columns) && !isset($created_sql_columns[$sheet_column_letter_to_sql_column_map[$column_letter]])) {
-								$create_columns_sql .= ", `{$sheet_column_letter_to_sql_column_map[$column_letter]}` text NOT NULL default ''";
-								$created_sql_columns[$sheet_column_letter_to_sql_column_map[$column_letter]] = true;
-							}
-							$query_param_map_sql .= ", `{$sheet_column_letter_to_sql_column_map[$column_letter]}`=:$column_letter";
+				// query for current columns for the SQL Table
+				$result = $this->core->db->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='$sql_table_name' AND TABLE_SCHEMA=database();");
+				$existing_sql_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+				if(!is_array($existing_sql_columns) || count($existing_sql_columns)==0) {
+					$preserve_existing_records = false;
+				}
+				// build sql query strings and parameter maps
+				$uuid_column = null;
+				$default_query_params = array();
+				$created_sql_columns = array();
+				$column_header_by_letter = array();
+				$column_letter_by_header = array();
+				$create_columns_sql = '';
+				$query_param_map_sql = '';
+				if($sheet_has_header_row) {
+					// process the header row (row 1) from the sheet
+					foreach($cells_by_row_by_column_letter[1] as $column_letter=>$column_header) {
+						$default_query_params[":$column_letter"] = '';
+						$column_header = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($column_header)), '_');
+						$column_header_by_letter[$column_letter] = $column_header;
+						$column_letter_by_header[$column_header] = $column_letter;
+						if($column_header=='ease_row_id') {
+							// special EASE interoperability handling of the "EASE Row ID" column
+							$uuid_column = $column_letter;
 						} else {
-							// this column has not been mapped... default to map to column with same name
-							if(!in_array($column_header, $this->core->reserved_sql_columns) && !isset($created_sql_columns[$column_header])) {
-								$create_columns_sql .= ", `$column_header` text NOT NULL default ''";
-								$created_sql_columns[$column_header] = true;
+							// check if this column or letter has been explicitly mapped
+							if(isset($sheet_column_header_to_sql_column_map[$column_header])) {
+								// this column has been explicitly mapped by column header
+								if(!in_array($sheet_column_header_to_sql_column_map[$column_header], $this->core->reserved_sql_columns) && !isset($created_sql_columns[$sheet_column_header_to_sql_column_map[$column_header]])) {
+									$create_columns_sql .= ", `{$sheet_column_header_to_sql_column_map[$column_header]}` text NOT NULL default ''";
+									$created_sql_columns[$sheet_column_header_to_sql_column_map[$column_header]] = true;
+								}
+								$query_param_map_sql .= ", `{$sheet_column_header_to_sql_column_map[$column_header]}`=:$column_letter";
+							} elseif(isset($sheet_column_letter_to_sql_column_map[$column_letter])) {
+								// this column has been explicitly mapped by column letter
+								if(!in_array($sheet_column_letter_to_sql_column_map[$column_letter], $this->core->reserved_sql_columns) && !isset($created_sql_columns[$sheet_column_letter_to_sql_column_map[$column_letter]])) {
+									$create_columns_sql .= ", `{$sheet_column_letter_to_sql_column_map[$column_letter]}` text NOT NULL default ''";
+									$created_sql_columns[$sheet_column_letter_to_sql_column_map[$column_letter]] = true;
+								}
+								$query_param_map_sql .= ", `{$sheet_column_letter_to_sql_column_map[$column_letter]}`=:$column_letter";
+							} else {
+								// this column has not been mapped... default to map to column with same name
+								if(!in_array($column_header, $this->core->reserved_sql_columns) && !isset($created_sql_columns[$column_header])) {
+									$create_columns_sql .= ", `$column_header` text NOT NULL default ''";
+									$created_sql_columns[$column_header] = true;
+								}
+								$query_param_map_sql .= ", `$column_header`=:$column_letter";
 							}
-							$query_param_map_sql .= ", `$column_header`=:$column_letter";
 						}
 					}
-				}
-				// done processing the header row
-				unset($cells_by_row_by_column_letter[1]);
-			} else {
-				// TODO! there is no header row, so process the sheet to determine if any columns don't have mappings
-				foreach(array_keys($referenced_sheet_column_letters) as $referenced_sheet_column_letter) {
+					// done processing the header row
+					unset($cells_by_row_by_column_letter[1]);
+				} else {
+					// TODO! there is no header row, so process the sheet to determine if any columns don't have mappings
+					foreach(array_keys($referenced_sheet_column_letters) as $referenced_sheet_column_letter) {
 
-				}
-			}
-			// wipe existing SQL Table unless it was explicitly preserved
-			if($preserve_existing_records) {
-				// add any new columns to the SQL table
-				foreach(array_keys($referenced_sql_columns) as $referenced_sql_column) {
-					if(!in_array($referenced_sql_column, $existing_sql_columns)) {
-						$this->core->db->exec("ALTER TABLE `$sql_table_name` ADD COLUMN `$referenced_sql_column` text NOT NULL default '';");
 					}
 				}
-			} else {
-				if(is_array($existing_sql_columns) && count($existing_sql_columns) > 0) {
-					// wipe the existing SQL Table
-					$this->core->db->exec("DROP TABLE `$sql_table_name`;");
-				}
-				// create the SQL Table
-				$sql = "CREATE TABLE `$sql_table_name` (
-							instance_id int NOT NULL PRIMARY KEY auto_increment,
-							created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
-							updated_on timestamp NOT NULL,
-							uuid varchar(32) NOT NULL UNIQUE
-							$create_columns_sql
-						);	";
-				$this->core->db->exec($sql);
-			}
-			// process each row in the spreadsheet to insert a new record in the SQL Table
-			if($uuid_column) {
-				// the "EASE Row ID" column was set in the sheet, use that as the primary key
-				$query = $this->core->db->prepare("REPLACE INTO `$sql_table_name` SET uuid=:$uuid_column $query_param_map_sql;");
-				foreach($cells_by_row_by_column_letter as $row_number=>$row) {
-					$params = $default_query_params;
-					foreach($row as $column_letter=>$value) {
-						$params[":$column_letter"] = $value;
+				// wipe existing SQL Table unless it was explicitly preserved
+				if($preserve_existing_records) {
+					// add any new columns to the SQL table
+					foreach(array_keys($referenced_sql_columns) as $referenced_sql_column) {
+						if(!in_array($referenced_sql_column, $existing_sql_columns)) {
+							$this->core->db->exec("ALTER TABLE `$sql_table_name` ADD COLUMN `$referenced_sql_column` text NOT NULL default '';");
+						}
 					}
-					$result = $query->execute($params);
-				}
-			} else {
-				// custom key mappings... query for existing records
-				$key_columns_sql = 'uuid';
-				$where_clause_sql = '';
-				if(is_array($sheet_column_header_to_sql_column_keys) && count($sheet_column_header_to_sql_column_keys) > 0) {
-					$key_columns_sql .= ',`' . implode('`,`', $sheet_column_header_to_sql_column_keys) . '`';
-					foreach($sheet_column_header_to_sql_column_keys as $column_header=>$sql_column) {
-						$where_clause_sql .= " AND `$sql_column`=:" . $column_letter_by_header[$column_header];
+				} else {
+					if(is_array($existing_sql_columns) && count($existing_sql_columns) > 0) {
+						// wipe the existing SQL Table
+						$this->core->db->exec("DROP TABLE `$sql_table_name`;");
 					}
+					// create the SQL Table
+					$sql = "CREATE TABLE `$sql_table_name` (
+								instance_id int NOT NULL PRIMARY KEY auto_increment,
+								created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+								updated_on timestamp NOT NULL,
+								uuid varchar(32) NOT NULL UNIQUE
+								$create_columns_sql
+							);	";
+					$this->core->db->exec($sql);
 				}
-				if(is_array($sheet_column_letter_to_sql_column_keys) && count($sheet_column_letter_to_sql_column_keys) > 0) {
-					$key_columns_sql .= ',`' . implode('`,`', $sheet_column_letter_to_sql_column_keys) . '`';
-					foreach($sheet_column_letter_to_sql_column_keys as $column_letter=>$sql_column) {
-						$where_clause_sql .= " AND `$sql_column`=:$column_letter";
+				// process each row in the spreadsheet to insert a new record in the SQL Table
+				if($uuid_column) {
+					// the "EASE Row ID" column was set in the sheet, use that as the primary key
+					$query = $this->core->db->prepare("REPLACE INTO `$sql_table_name` SET uuid=:$uuid_column $query_param_map_sql;");
+					foreach($cells_by_row_by_column_letter as $row_number=>$row) {
+						$params = $default_query_params;
+						foreach($row as $column_letter=>$value) {
+							$params[":$column_letter"] = $value;
+						}
+						$result = $query->execute($params);
 					}
-				}
-				$where_clause_sql = substr($where_clause_sql, 5);  // remove the initial " AND " from the where clause
-				$update_query = $this->core->db->prepare("UPDATE `$sql_table_name` SET updated_on=NOW() $query_param_map_sql WHERE $where_clause_sql;");
-				$insert_query = $this->core->db->prepare("REPLACE INTO `$sql_table_name` SET uuid=:uuid $query_param_map_sql;");
-				foreach($cells_by_row_by_column_letter as $row_number=>$row) {
-					$params = $default_query_params;
-					foreach($row as $column_letter=>$value) {
-						$params[":$column_letter"] = $value;
+				} else {
+					// custom key mappings... query for existing records
+					$key_columns_sql = 'uuid';
+					$where_clause_sql = '';
+					if(is_array($sheet_column_header_to_sql_column_keys) && count($sheet_column_header_to_sql_column_keys) > 0) {
+						$key_columns_sql .= ',`' . implode('`,`', $sheet_column_header_to_sql_column_keys) . '`';
+						foreach($sheet_column_header_to_sql_column_keys as $column_header=>$sql_column) {
+							$where_clause_sql .= " AND `$sql_column`=:" . $column_letter_by_header[$column_header];
+						}
 					}
-					$result = $update_query->execute($params);
-					if($update_query->rowCount()==0) {
-						// update failed, insert a new record instead
-						$params[':uuid'] = $this->core->new_uuid();
-						$result = $insert_query->execute($params);
+					if(is_array($sheet_column_letter_to_sql_column_keys) && count($sheet_column_letter_to_sql_column_keys) > 0) {
+						$key_columns_sql .= ',`' . implode('`,`', $sheet_column_letter_to_sql_column_keys) . '`';
+						foreach($sheet_column_letter_to_sql_column_keys as $column_letter=>$sql_column) {
+							$where_clause_sql .= " AND `$sql_column`=:$column_letter";
+						}
+					}
+					$where_clause_sql = substr($where_clause_sql, 5);  // remove the initial " AND " from the where clause
+					$update_query = $this->core->db->prepare("UPDATE `$sql_table_name` SET updated_on=NOW() $query_param_map_sql WHERE $where_clause_sql;");
+					$insert_query = $this->core->db->prepare("REPLACE INTO `$sql_table_name` SET uuid=:uuid $query_param_map_sql;");
+					foreach($cells_by_row_by_column_letter as $row_number=>$row) {
+						$params = $default_query_params;
+						foreach($row as $column_letter=>$value) {
+							$params[":$column_letter"] = $value;
+						}
+						$result = $update_query->execute($params);
+						if($update_query->rowCount()==0) {
+							// update failed, insert a new record instead
+							$params[':uuid'] = $this->core->new_uuid();
+							$result = $insert_query->execute($params);
+						}
 					}
 				}
 			}
@@ -746,6 +761,7 @@ class ease_parser {
 				$try_count = 0;
 				while($new_spreadsheet===null && $try_count<=5) {
 					if($try_count > 0) {
+						// apply exponential backoff
 						sleep((2 ^ ($try_count - 1)) + (mt_rand(1, 1000) / 1000));
 					}
 					try {
@@ -868,14 +884,13 @@ class ease_parser {
 			$try_count = 0;
 			while($files===null && $try_count<=5) {
 				if($try_count > 0) {
+					// apply exponential backoff
 					sleep((2 ^ ($try_count - 1)) + (mt_rand(1, 1000) / 1000));
 				}
-				$try_count++;
 				try {
+					$try_count++;
 				 	$files = $service->files->listFiles(array('q'=>"mimeType = 'application/vnd.google-apps.folder' and title = '" . str_replace("'", "\\'", str_replace("\\", "\\\\", $matches[5])) . "' and trashed = false"));
 				} catch(Google_Service_Exception $e) {
-					echo $e->getMessage();
-					exit;
 					continue;
 				}
 			}
@@ -898,10 +913,11 @@ class ease_parser {
 				$try_count = 0;
 				while($new_folder===null && $try_count<=5) {
 					if($try_count > 0) {
+						// apply exponential backoff
 						sleep((2 ^ ($try_count - 1)) + (mt_rand(1, 1000) / 1000));
 					}
-					$try_count++;
 					try {
+						$try_count++;
 						$new_folder = $service->files->insert($file);
 					} catch(Google_Service_Exception $e) {
 						continue;
@@ -1005,6 +1021,78 @@ class ease_parser {
 		}
 
 		###############################################
+		##	ROUND
+		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*round\s+([^;]+?)\s+to\s+([0-9]+)\s+decimals\s*;\s*/is', $this->unprocessed_body, $matches)) {
+			$this->interpreter->inject_global_variables($matches[2]);
+			$round_var_parts = explode('.', $matches[1], 2);
+			if(count($round_var_parts)==2) {
+				$bucket = strtolower(rtrim($round_var_parts[0]));
+				$key = ltrim($round_var_parts[1]);
+				$key_lower = strtolower($key);
+				$global_key = $bucket . '.' . $key_lower;
+			} else {
+				$bucket = '';
+				$key = trim($matches[1]);
+				$key_lower = strtolower($key);
+				$global_key = $key_lower;
+			}
+			// round the value for the bucket key
+			if($bucket=='system') {
+				// do nothing, global system values can not be set in an EASE block
+			} elseif($bucket=='config') {
+				// TODO! update the ease_config database record for the key
+			} elseif($bucket=='session') {
+				if(isset($_SESSION[$key])) {
+					$_SESSION[$key] = round($_SESSION[$key], intval($matches[2]));
+				} elseif(isset($_SESSION[$key_lower])) {
+					$_SESSION[$key_lower] = round($_SESSION[$key_lower], intval($matches[2]));
+				} else {
+					$_SESSION[$key_lower] = round(0, intval($matches[2]));
+				}
+			} elseif($bucket=='cookie') {
+				if(isset($_COOKIE[$key])) {
+					$set_value = round($_COOKIE[$key], intval($matches[2]));
+					setcookie($key, $set_value, time() + 60 * 60 * 24 * 365, '/');
+					$_COOKIE[$key] = $set_value;
+				} elseif(isset($_COOKIE[$key_lower])) {
+					$set_value = round($_COOKIE[$key_lower], intval($matches[2]));
+					setcookie($key_lower, $set_value, time() + 60 * 60 * 24 * 365, '/');
+					$_COOKIE[$key_lower] = $set_value;
+				} else {
+					$set_value = round(0, intval($matches[2]));
+					setcookie($key_lower, $set_value, time() + 60 * 60 * 24 * 365, '/');
+					$_COOKIE[$key_lower] = $set_value;
+				}
+			} elseif($bucket=='cache') {
+				if($this->core->memcache) {
+					if(($set_value = $this->core->memcache->get($key))!==false) {
+						$set_value = round($set_value, intval($matches[2]));
+						$this->core->memcache->set($key, $set_value);
+					} elseif(($set_value = $this->core->memcache->get($key_lower))!==false) {
+						$set_value = round($set_value, intval($matches[2]));
+						$this->core->memcache->set($key_lower, $set_value);
+					} else {
+						$this->core->memcache->set($key_lower, round(0, intval($matches[2])));
+					}
+				}
+			} else {
+				// the bucket was not reserved, set the value in the EASE globals
+				if(isset($this->core->globals[$bucket . '.' . $key])) {
+					$this->core->globals[$bucket . '.' . $key] = round($this->core->globals[$bucket . '.' . $key], intval($matches[2]));
+				} elseif(isset($this->core->globals[$global_key])) {
+					$this->core->globals[$global_key] = round($this->core->globals[$global_key], intval($matches[2]));
+				} elseif($bucket=='' && isset($this->core->globals[$key])) {
+					$this->core->globals[$key] = round($this->core->globals[$key], intval($matches[2]));
+				} else {
+					$this->core->globals[$global_key] = round(0, intval($matches[2]));
+				}
+			}
+			// remove the ROUND command from the EASE block, then process any remains
+			$this->unprocessed_body = $this->core->ease_block_start . ' ' . substr($this->unprocessed_body, strlen($matches[0]));
+			return $this->process_ease_block();
+		}
+
+		###############################################
 		##	REDIRECT TO "QUOTED-STRING"
 		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*redirect\s+to\s*"\s*(.*?)\s*"\s*[\.;]{0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 			// inject any global variables into the redirect URL
@@ -1016,7 +1104,7 @@ class ease_parser {
 
 		###############################################
 		##	IF ELSE - Conditional EASE blocks
-		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*if\s*\(\s*(.*?)\s*\)\s*\{(.*?)\}\s*((?:else\s*if\s*\(\s*.*?\s*\)\s*\{.*?\}\s*)*)(?:else\s*\{(.*?)\}\s*|)(' . preg_quote($this->core->ease_block_end, '/') . '|[^;]+?;\s*' . preg_quote($this->core->ease_block_end, '/') . ')/is', $this->unprocessed_body, $matches)) {
+		if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*if\s*\(\s*(.*?)\s*\)\s*\{(.*?)\}\s*((?:else\s*if\s*\(\s*.*?\s*\)\s*\{.*?\}\s*)*)(?:else\s*\{(.*?)\}\s*|)(' . preg_quote($this->core->ease_block_end, '/') . '|.*?;\s*' . preg_quote($this->core->ease_block_end, '/') . ')/is', $this->unprocessed_body, $matches)) {
 			// initialize variables to store the EASE blocks by condition, the else condition EASE block, and the EASE block for any matched condition
 			$conditions = array();
 			$else_ease_block = '';
@@ -1460,7 +1548,7 @@ class ease_parser {
 						$try_count = 0;
 						while($new_spreadsheet===null && $try_count<=5) {
 							if($try_count > 0) {
-								// apply exponential backoff for up to 5 API call failures
+								// apply exponential backoff
 								sleep((2 ^ ($try_count - 1)) + (mt_rand(1, 1000) / 1000));
 							}
 							try {
@@ -1487,10 +1575,15 @@ class ease_parser {
 						$try_count = 0;
 						while($spreadSheet===null && $try_count<=5) {
 							if($try_count > 0) {
+								// apply exponential backoff
 								sleep((2 ^ ($try_count - 1)) + (mt_rand(1, 1000) / 1000));
 							}
-							$spreadSheet = $spreadsheetService->getSpreadsheetById($google_spreadsheet_id);
-							$try_count++;
+							try {
+								$try_count++;
+								$spreadSheet = $spreadsheetService->getSpreadsheetById($google_spreadsheet_id);
+							} catch(Exception $e) {
+								continue;
+							}
 						}
 						$new_spreadsheet_created = true;
 					}
@@ -1868,8 +1961,13 @@ class ease_parser {
 					}
 					$query = $this->core->db->prepare("INSERT INTO `$sql_table_name` SET uuid=:uuid $insert_columns_sql;");
 					$query->execute($params);
+					// make the new record available in the EASE Globals
 					$new_row['instance_id'] = $this->core->db->lastInsertId();
 					$new_row['uuid'] = $params[':uuid'];
+					$new_row['id'] = $new_row['uuid'];
+					foreach($new_row as $key=>$value) {
+						$this->core->globals[$new_record_reference . '.' . $key] = $value;
+					}
 				}
 			}
 			// if a redirect command was set in the CREATE NEW RECORD block, redirect now and stop processing this request
@@ -2712,7 +2810,7 @@ class ease_parser {
 				// remove the START block from the unprocessed body
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($start_form_block));
 				// find the END FORM and parse out the form body
-				if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+form\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
+				if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*form\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 					// END FORM found, process the parsed form body
 					$form_body = $matches[1];
 					// if this is an edit form, pull the current values for the existing row being edited
@@ -3878,6 +3976,7 @@ class ease_parser {
 					},
 					$unprocessed_start_form_block
 				);
+				
 				// RESTRICT POSTS - define a variable and its required contents to allow the post (CAPTCHA)
 				$restrict_post = array();
 				$unprocessed_start_form_block = preg_replace_callback(
@@ -3889,6 +3988,7 @@ class ease_parser {
 					},
 					$unprocessed_start_form_block
 				);
+				
 				// WHEN *ACTION* REDIRECT TO "QUOTED-STRING"
 				$redirect_to_by_action = array();
 				$unprocessed_start_form_block = preg_replace_callback(
@@ -3896,30 +3996,6 @@ class ease_parser {
 					function($matches) use (&$redirect_to_by_action) {
 						$this->interpreter->inject_global_variables($matches[2]);
 						$redirect_to_by_action[$matches[1]] = $matches[2];
-						return '';
-					},
-					$unprocessed_start_form_block
-				);
-				// WHEN *ACTION* SET *EASE-VARIABLE* TO "QUOTED-STRING"
-				$set_to_list_by_action = array();
-				$unprocessed_start_form_block = preg_replace_callback(
-					'/\s*when\s+(\w+)\s+set\s+([^;]+?)\s+to\s*"(.*?)"\s*;\s*/is',
-					function($matches) use (&$set_to_list_by_action) {
-						$this->interpreter->inject_global_variables($matches[2]);
-						$this->interpreter->inject_global_variables($matches[3]);
-						$set_to_list_by_action[$matches[1]][$matches[2]] = $matches[3];
-						return '';
-					},
-					$unprocessed_start_form_block
-				);
-				// WHEN *ACTION* SET *EASE-VARIABLE* TO *MATH-EXPRESSION*
-				$calculate_list_by_action = array();
-				$unprocessed_start_form_block = preg_replace_callback(
-					'/\s*when\s+(\w+)\s+set\s+([^;]+?)\s+to\s*(.*?)\s*;\s*/is',
-					function($matches) use (&$calculate_list_by_action) {
-						$this->interpreter->inject_global_variables($matches[2]);
-						$this->interpreter->inject_global_variables($matches[3]);
-						$calculate_list_by_action[$matches[1]][$matches[2]] = $matches[3];
 						return '';
 					},
 					$unprocessed_start_form_block
@@ -4006,24 +4082,63 @@ class ease_parser {
 					},
 					$unprocessed_start_form_block
 				);
-				// continue processing the remaining START block as long as multi-directive FORM ACTIONS are parsed out from the beginning of the unprocessed START block
+				// continue processing the remaining START block as long as FORM ACTIONS are parsed out from the beginning of the unprocessed START block
+				$set_to_list_by_action = array();
+				$calculate_list_by_action = array();
 				$create_sql_record_list_by_action = array();
 				$update_sql_record_list_by_action = array();
 				$delete_sql_record_list_by_action = array();
 				$create_spreadsheet_row_list_by_action = array();
 				$update_spreadsheet_row_list_by_action = array();
 				$delete_spreadsheet_row_list_by_action = array();
+				$conditional_actions = array();
 				do {
 					$form_directive_found = false;
-					// WHEN *ACTION* create new record FOR SQL TABLE
-					if(preg_match('/^\s*when\s+(\w+)\s+create\s+(new\s+|)record\s+for\s*"\s*(.*?)\s*"((\s*and|)(\s*reference|)\s+as\s*"\s*(.*?)\s*"|)\s*;(.*)$/is', $unprocessed_start_form_block, $form_directive_matches)) {
+					// WHEN *ACTION* [AND *CONDITIONAL*] SET *EASE-VARIABLE* TO "QUOTED-STRING"
+					if(preg_match('/^\s*when\s+(\w+)\s+((and|&&|&)\s*(\(\s*.*?\s*\))\s*|)set\s+([^;]+?)\s+to\s*"(.*?)"\s*;(.*)$/is', $unprocessed_start_form_block, $form_directive_matches)) {
+						$form_directive_found = true;
+						$this->interpreter->inject_global_variables($form_directive_matches[5]);
+						$this->interpreter->inject_global_variables($form_directive_matches[6]);
+						if(isset($form_directive_matches[2]) && trim($form_directive_matches[2])=='') {
+							$set_to_list_by_action[$form_directive_matches[1]][$form_directive_matches[5]] = $form_directive_matches[6];
+						} else {
+							$conditional_actions[$form_directive_matches[1]][] = array(
+								'condition'=>$form_directive_matches[4],
+								'type'=>'set_to_string',
+								'variable'=>$form_directive_matches[5],
+								'value'=>$form_directive_matches[6]
+							);
+						}
+						$unprocessed_start_form_block = $form_directive_matches[7];
+						continue;
+					}
+					// WHEN *ACTION* [AND *CONDITIONAL*] SET *EASE-VARIABLE* TO *MATH-EXPRESSION*
+					if(preg_match('/^\s*when\s+(\w+)\s+((and|&&|&)\s*(\(\s*.*?\s*\))\s*|)set\s+([^;]+?)\s+to\s*(.*?)\s*;(.*)$/is', $unprocessed_start_form_block, $form_directive_matches)) {
+						$form_directive_found = true;
+						$this->interpreter->inject_global_variables($form_directive_matches[5]);
+						$this->interpreter->inject_global_variables($form_directive_matches[6]);
+						if(isset($form_directive_matches[2]) && trim($form_directive_matches[2])=='') {
+							$calculate_list_by_action[$form_directive_matches[1]][$form_directive_matches[5]] = $form_directive_matches[6];
+						} else {
+							$conditional_actions[$form_directive_matches[1]][] = array(
+								'condition'=>$form_directive_matches[4],
+								'type'=>'set_to_expression',
+								'variable'=>$form_directive_matches[5],
+								'value'=>$form_directive_matches[6]
+							);
+						}
+						$unprocessed_start_form_block = $form_directive_matches[7];
+						continue;
+					}
+					// WHEN *ACTION* [AND *CONDITIONAL*] CREATE NEW RECORD FOR SQL TABLE
+					if(preg_match('/^\s*when\s+(\w+)\s+((and|&&|&)\s*(\(\s*.*?\s*\))\s*|)create\s+(new\s+|)record\s+for\s*"\s*(.*?)\s*"((\s*and|)(\s*reference|)\s+as\s*"\s*(.*?)\s*"|)\s*;(.*)$/is', $unprocessed_start_form_block, $form_directive_matches)) {
 						$form_directive_found = true;
 						$create_sql_record = array();
-						$this->interpreter->inject_global_variables($form_directive_matches[3]);
-						$create_sql_record['for'] = $form_directive_matches[3];
-						$this->interpreter->inject_global_variables($form_directive_matches[7]);
-						$create_sql_record['as'] = strtolower($form_directive_matches[7]);
-						$unprocessed_create_sql_record_block = $form_directive_matches[8];
+						$this->interpreter->inject_global_variables($form_directive_matches[6]);
+						$create_sql_record['for'] = $form_directive_matches[6];
+						$this->interpreter->inject_global_variables($form_directive_matches[10]);
+						$create_sql_record['as'] = strtolower($form_directive_matches[10]);
+						$unprocessed_create_sql_record_block = $form_directive_matches[11];
 						do {
 							$create_sql_record_directive_found = false;
 							// SET TO
@@ -4045,6 +4160,7 @@ class ease_parser {
 									'value'=>$create_sql_record_directive_matches[2]
 								);
 								$unprocessed_create_sql_record_block = substr($unprocessed_create_sql_record_block, strlen($create_sql_record_directive_matches[0]));
+								continue;
 							}
 							// ROUND TO x DECIMALS
 							if(preg_match('/^\s*round\s+(.*?)\s+to\s+([0-9]+)\s+decimals\s*;\s*/is', $unprocessed_create_sql_record_block, $create_sql_record_directive_matches)) {
@@ -4064,15 +4180,26 @@ class ease_parser {
 									'decimals'=>$create_sql_record_directive_matches[2]
 								);
 								$unprocessed_create_sql_record_block = substr($unprocessed_create_sql_record_block, strlen($create_sql_record_directive_matches[0]));
+								continue;
 							}
 							// GO TO NEXT RECORD - remove these references required by the python core, as they aren't required for the PHP version
 							if(preg_match('/^\s*go\s*to\s*next\s*record\s*;\s*/is', $unprocessed_create_sql_record_block, $create_sql_record_directive_matches)) {
 								$create_sql_record_directive_found = true;
 								$unprocessed_create_sql_record_block = substr($unprocessed_create_sql_record_block, strlen($create_sql_record_directive_matches[0]));
+								continue;
 							}
 						} while($create_sql_record_directive_found);
-						$create_sql_record_list_by_action[$form_directive_matches[1]][] = $create_sql_record;
+						if(isset($form_directive_matches[2]) && trim($form_directive_matches[2])=='') {
+							$create_sql_record_list_by_action[$form_directive_matches[1]][] = $create_sql_record;
+						} else {
+							$conditional_actions[$form_directive_matches[1]][] = array(
+								'condition'=>$form_directive_matches[4],
+								'type'=>'create_sql_record',
+								'record'=>$create_sql_record
+							);
+						}
 						$unprocessed_start_form_block = $unprocessed_create_sql_record_block;
+						continue;
 					}
 					// WHEN *ACTION* UPDATE RECORD FOR SQL TABLE
 					if(preg_match('/^\s*when\s+(\w+)\s+update\s+(old\s+|existing\s+|)record\s+for\s*"\s*(.*?)\s*"((\s*and|)(\s*reference|)\s+as\s*"\s*(.*?)\s*"|)\s*;(.*)$/is', $unprocessed_start_form_block, $form_directive_matches)) {
@@ -4104,6 +4231,7 @@ class ease_parser {
 									'value'=>$update_sql_record_directive_matches[2]
 								);
 								$unprocessed_update_sql_record_block = substr($unprocessed_update_sql_record_block, strlen($update_sql_record_directive_matches[0]));
+								continue;
 							}
 							// ROUND TO x DECIMALS
 							if(preg_match('/^\s*round\s+(.*?)\s+to\s+([0-9]+)\s+decimals\s*;\s*/is', $unprocessed_update_sql_record_block, $update_sql_record_directive_matches)) {
@@ -4123,15 +4251,18 @@ class ease_parser {
 									'decimals'=>$update_sql_record_directive_matches[2]
 								);
 								$unprocessed_update_sql_record_block = substr($unprocessed_update_sql_record_block, strlen($update_sql_record_directive_matches[0]));
+								continue;
 							}
 							// GO TO NEXT RECORD - remove these references required by the python core, as they aren't required for the PHP version
 							if(preg_match('/^\s*go\s*to\s*next\s*record\s*;\s*/is', $unprocessed_update_sql_record_block, $update_sql_record_directive_matches)) {
 								$update_sql_record_directive_found = true;
 								$unprocessed_update_sql_record_block = substr($unprocessed_update_sql_record_block, strlen($update_sql_record_directive_matches[0]));
+								continue;
 							}
 						} while($update_sql_record_directive_found);
 						$update_sql_record_list_by_action[$form_directive_matches[1]][] = $update_sql_record;
 						$unprocessed_start_form_block = $unprocessed_update_sql_record_block;
+						continue;
 					}
 					// WHEN *ACTION* DELETE RECORD FOR SQL TABLE
 					if(preg_match('/^\s*when\s+(\w+)\s+delete\s+record\s+for\s*"\s*(.*?)\s*"\s*;(.*)$/is', $unprocessed_start_form_block, $form_directive_matches)) {
@@ -4146,14 +4277,17 @@ class ease_parser {
 							if(preg_match('/^\s*go\s*to\s*next\s*record\s*;\s*/is', $unprocessed_delete_sql_record_block, $delete_sql_record_directive_matches)) {
 								$delete_sql_record_directive_found = true;
 								$unprocessed_delete_sql_record_block = substr($unprocessed_delete_sql_record_block, strlen($delete_sql_record_directive_matches[0]));
+								continue;
 							}
 						} while($delete_sql_record_directive_found);
 						$delete_sql_record_list_by_action[$form_directive_matches[1]][] = $delete_sql_record;
 						$unprocessed_start_form_block = $unprocessed_delete_sql_record_block;
+						continue;
 					}
-				} while($form_directive_found);
+					
+					// !! ANY NEW FORM - FOR SQL TABLE DIRECTIVES GET ADDED HERE
 
-				// !! ANY NEW FORM - FOR SQL TABLE DIRECTIVES GET ADDED HERE
+				} while($form_directive_found);
 
 				// if the START block has any content remaining, there was an unrecognized FORM directive; log an error
 				$this->interpreter->remove_comments($unprocessed_start_form_block);
@@ -4191,11 +4325,12 @@ class ease_parser {
 					@$_SESSION['ease_forms'][$form_id]['update_spreadsheet_row_list_by_action'] = $update_spreadsheet_row_list_by_action;
 					@$_SESSION['ease_forms'][$form_id]['delete_spreadsheet_row_list_by_action'] = $delete_spreadsheet_row_list_by_action;
 					@$_SESSION['ease_forms'][$form_id]['redirect_to_by_action'] = $redirect_to_by_action;
+					@$_SESSION['ease_forms'][$form_id]['conditional_actions'] = $conditional_actions;
 				}
 				// remove the START block from the unprocessed body
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($start_form_block));
 				// find the END FORM tag to determine the form body
-				if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+form\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
+				if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*form\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 					// END FORM tag found;  process the form body
 					$form_body = $matches[1];
 					// if this is an edit form, validate the referenced record ID
@@ -4215,77 +4350,11 @@ class ease_parser {
 						}
 					}
 					
-					/*
-					$this->core->html_dump($form_body, 'pre processing');
-					$ease_core = new ease_core();
-					$form_body = $ease_core->process_ease($form_body, true);
-					$ease_core = null;
-					$this->core->html_dump($form_body, 'post processing');
-					*/
-					
-					// IF / ELSE - parse out and process any Conditional EASE from the form body
-					$form_body = preg_replace_callback(
-						'/' . preg_quote($this->core->ease_block_start, '/') . '\s*if\s*\(\s*(.*?)\s*\)\s*\{(.*?)\}\s*(else\s*if\s*\(\s*(.*?)\s*\)\s*\{(.*?)\}\s*)*(else\s*\{(.*?)\}\s*|)' . preg_quote($this->core->ease_block_end, '/') . '/is',
-						function($matches) {
-							// process the matches to build the conditional array and any catchall else condition
-							$conditions[$matches[1]] = $matches[2];
-							// any ELSE IF conditions will start at the 3rd item in the regular expression matches array
-							$matches_index = 3;
-							while(preg_match('/^else\s*if/is', $matches[$matches_index], $inner_matches)) {
-								// found an ELSE IF condition
-								$conditions[$matches[$matches_index + 1]] = $matches[$matches_index + 2];
-								// advance the index to look for the next ELSE IF condition
-								$matches_index += 3;
-							}
-							// if the index pointer is still at the initial setting 3, there were no ELSE IF conditions
-							if($matches_index==3) {
-								// advance the index to the 6th item in the regular expression matches array where an ELSE condition might be found
-								$matches_index = 6;
-							}
-							// check for any ELSE condition
-							if(preg_match('/^else/is', $matches[$matches_index], $inner_matches)) {
-								// found an ELSE condition
-								$else_text = $matches[$matches_index + 1];
-							}
-							// process each conditional in order to determine if any of the conditional EASE blocks should be processed
-							foreach($conditions as $condition=>$conditional_text) {
-								$remaining_condition = $condition;
-								$php_condition_string = '';
-								while(preg_match('/^(&&|\|\||and|or|xor){0,1}\s*(!|not){0,1}([(\s]*)"(.*?)"\s*(==|!=|>|>=|<|<=|<>|===|!==|=|is)\s*"(.*?)"([)\s]*)/is', $remaining_condition, $inner_matches)) {
-									if(strtolower($inner_matches[1])=='and') {
-										$inner_matches[1] = '&&';
-									}
-									if(strtolower($inner_matches[1])=='or') {
-										$inner_matches[1] = '||';
-									}
-									if(strtolower($inner_matches[2])=='not') {
-										$inner_matches[2] = '!';
-									}
-									if(strtolower($inner_matches[5])=='=') {
-										$inner_matches[5] = '==';
-									}
-									if(strtolower($inner_matches[5])=='is') {
-										$inner_matches[5] = '==';
-									}
-									$this->interpreter->inject_global_variables($inner_matches[4]);
-									$this->interpreter->inject_global_variables($inner_matches[6]);
-									$php_condition_string .= $inner_matches[1] . $inner_matches[2] . $inner_matches[3] . var_export($inner_matches[4], true) . $inner_matches[5] . var_export($inner_matches[6], true) . $inner_matches[7];
-									$remaining_condition = substr($remaining_condition, strlen($inner_matches[0]));
-								}
-								if(@eval('if(' . $php_condition_string . ') return true; else return false;')) {
-									return $conditional_text;
-								}
-							}
-							if(isset($else_text)) {
-								return $else_text;
-							} else {
-								return '';
-							}
-						},
-						$form_body
-					);
-					// inject any global variables into the form body
-					$this->interpreter->inject_global_variables($form_body);
+					// process the form body for any EASE
+					$tokenized_form_body = $this->string_to_tokenized_ease($form_body);
+					$params = array('save_to_global_variable'=>'system.processed_form_body', 'no_local_injection'=>true);
+					$this->process_tokenized_ease($tokenized_form_body, $params);
+					$form_body = $this->core->globals['system.processed_form_body'];
 					
 					// process INPUT tags in the FORM body with an EASE tag attribute
 					$form_body = preg_replace_callback(
@@ -5476,7 +5545,7 @@ class ease_parser {
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($start_list_block));
 
 				// find the END LIST block and parse out the LIST body
-				if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+list\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
+				if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*list\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 					// END LIST found, parse out the LIST body
 					$list_body = $matches[1];
 					$list_length = strlen($matches[0]);
@@ -5489,7 +5558,7 @@ class ease_parser {
 				// parse out the LIST HEADER template
 				$list_header_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+header\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+header\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+header\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*header\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_header_template) {
 						$list_header_template = $matches[1];
 						return '';
@@ -5501,7 +5570,7 @@ class ease_parser {
 				// parse out the LIST ROW template
 				$list_row_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+row\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+row\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+row\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*row\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_row_template) {
 						$list_row_template = $matches[1];
 						return '';
@@ -5513,7 +5582,7 @@ class ease_parser {
 				// parse out the LIST FOOTER template
 				$list_footer_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+footer\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+footer\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+footer\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*footer\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_footer_template) {
 						$list_footer_template = $matches[1];
 						return '';
@@ -5525,7 +5594,7 @@ class ease_parser {
 				// parse out the LIST NO RESULTS template
 				$list_no_results_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*(start\s+|)no\s+results\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+no\s+results\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*(start\s+|)no\s+results\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*no\s*results\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_no_results_template) {
 						$list_no_results_template = $matches[2];
 						return '';
@@ -5553,10 +5622,18 @@ class ease_parser {
 				// determine if the Google Drive Spreadsheet was referenced by name or ID
 				if(isset($google_spreadsheet_id) && $google_spreadsheet_id!='') {
 					// Google Drive Spreadsheet was referenced by ID
-					try {
-						$spreadSheet = $spreadsheetService->getSpreadsheetById($google_spreadsheet_id);
-					} catch(Exception $e) {
-						// error loading spreadsheet by ID
+					$spreadSheet = null;
+					$try_count = 0;
+					while($spreadSheet===null && $try_count<=2) {
+						if($try_count > 0) {
+							// apply exponential backoff
+							sleep((2 ^ ($try_count - 1)) + (mt_rand(1, 1000) / 1000));
+						}
+						try {
+							$spreadSheet = $spreadsheetService->getSpreadsheetById($google_spreadsheet_id);
+						} catch(Exception $e) {
+							continue;
+						}
 					}
 					if($spreadSheet===null) {
 						$this->output_buffer .= "<div style='margin:5px; color:red;'>Error!  Unable to load Google Drive Spreadsheet by ID: " . htmlspecialchars($google_spreadsheet_id) . "</div>";
@@ -5783,7 +5860,7 @@ class ease_parser {
 				// validate the referenced SQL table exists by querying for all column names
 				$result = $this->core->db->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='$sql_table_name' AND TABLE_SCHEMA=database();");
 				if($existing_columns = $result->fetchAll(PDO::FETCH_COLUMN)) {
-					// build the SELECT clause of the list query
+					// initialize the SELECT clause of the list query
 					$select_clause_sql_string = '';
 					foreach($existing_columns as $column) {
 						if($select_clause_sql_string!='') {
@@ -5795,6 +5872,23 @@ class ease_parser {
 
 				// the FOR attribute of the LIST was successfully parsed, scan for any remaining LIST directives
 				$unprocessed_start_list_block = substr($unprocessed_start_list_block, strlen($matches[0]));
+
+				// continue processing the remaining START block as long as LIST directives are parsed out from the beginning of the unprocessed START block
+				// TODO!! change list directive processing to be parsed and processed sequentially
+				$list_directive_found = false;
+				do {
+					$list_directive_found = false;
+					/*
+					if(preg_match('/^\s*\s*;(.*)$/is', $unprocessed_start_list_block, $list_directive_matches)) {
+						$list_directive_found = true;
+						$this->interpreter->inject_global_variables($list_directive_matches[0]);
+
+						$unprocessed_start_list_block = $list_directive_matches[1];
+						continue;
+					}
+					*/
+					// !! ANY NEW LIST - FOR SQL TABLE DIRECTIVES GET ADDED HERE
+				} while($list_directive_found);
 
 				// IF/ELSE - parse out and process any Conditionals from the start list block
 				$unprocessed_start_list_block = preg_replace_callback(
@@ -5858,13 +5952,28 @@ class ease_parser {
 					$unprocessed_start_list_block
 				);
 
+				// SHOW UNIQUE
+				$show_unique_sql_table = null;
+				$unprocessed_start_list_block = preg_replace_callback(
+					'/\s*show\s*unique\s*([^;]+?)\s*;\s*/is',
+					function($matches) use (&$sql_table_name, &$show_unique_sql_table, &$referenced_columns, &$select_clause_sql_string) {
+						$this->interpreter->inject_global_variables($matches[1]);
+						$show_unique_sql_table = preg_replace('/[^a-z0-9]+/s', '_', strtolower($matches[1]));
+						return '';
+					},
+					$unprocessed_start_list_block
+				);
+				if($show_unique_sql_table && $show_unique_sql_table!=$sql_table_name) {
+					$select_clause_sql_string = '';
+				}
+				
 				// RELATE
 				$join_sql_string = '';
 				$list_relations = array();
 				$existing_relation_columns = array();
 				$unprocessed_start_list_block = preg_replace_callback(
 					'/\s*(must\s*|force\s*|require\s*|always\s*|)(relate|join|link|tie)\s+([^;]+?)\s+to\s+([^;]+?)\s*;\s*/is',
-					function($matches) use (&$join_sql_string, &$list_relations, &$existing_relation_columns, &$sql_table_name, &$existing_columns, &$referenced_columns, &$select_clause_sql_string) {
+					function($matches) use (&$join_sql_string, &$list_relations, &$show_unique_sql_table, &$existing_relation_columns, &$sql_table_name, &$existing_columns, &$referenced_columns, &$select_clause_sql_string) {
 						$this->interpreter->inject_global_variables($matches[3]);
 						$this->interpreter->inject_global_variables($matches[4]);
 						$table_column_parts = explode('.', trim($matches[3]), 2);
@@ -5905,23 +6014,87 @@ class ease_parser {
 								if(in_array(strtolower(trim($matches[1])), array('must', 'force', 'require', 'always'))) {
 									$list_relations["{$from_bucket}.{$from_key}"] = "{$to_bucket}.{$to_key}";
 									// append to the SELECT clause of the list query
-									foreach($existing_relation_columns[$to_bucket] as $column) {
-										if($select_clause_sql_string!='') {
-											$select_clause_sql_string .= ', ';
+									if((!$show_unique_sql_table) || ($show_unique_sql_table==$to_bucket)) {
+										foreach($existing_relation_columns[$to_bucket] as $column) {
+											if($select_clause_sql_string!='') {
+												$select_clause_sql_string .= ', ';
+											}
+											$select_clause_sql_string .= "`$to_bucket`.`$column` AS `$to_bucket.$column`";
 										}
-										$select_clause_sql_string .= "`$to_bucket`.`$column` AS `$to_bucket.$column`";
 									}
 									$join_sql_string .= " INNER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
 								} elseif(in_array($from_key, $existing_columns) && in_array($to_key, $existing_relation_columns[$to_bucket])) {
 									$list_relations["{$from_bucket}.{$from_key}"] = "{$to_bucket}.{$to_key}";
 									// append to the SELECT clause of the list query
-									foreach($existing_relation_columns[$to_bucket] as $column) {
-										if($select_clause_sql_string!='') {
-											$select_clause_sql_string .= ', ';
+									if((!$show_unique_sql_table) || ($show_unique_sql_table==$to_bucket)) {
+										foreach($existing_relation_columns[$to_bucket] as $column) {
+											if($select_clause_sql_string!='') {
+												$select_clause_sql_string .= ', ';
+											}
+											$select_clause_sql_string .= "`$to_bucket`.`$column` AS `$to_bucket.$column`";
 										}
-										$select_clause_sql_string .= "`$to_bucket`.`$column` AS `$to_bucket.$column`";
 									}
 									$join_sql_string .= " LEFT OUTER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
+								}
+							} else {
+								// the related SQL Table does not exist
+								if(in_array(strtolower(trim($matches[1])), array('must', 'force', 'require', 'always'))) {
+									// this was a forced relation, so include the JOIN clause even though the query will fail
+									$join_sql_string .= " INNER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
+								}
+							}
+						} else {
+							// check if this is a relation to a table that was already related to the original relation table				
+							if((!isset($existing_relation_columns[$from_bucket])) && isset($existing_relation_columns[$to_bucket])) {
+								// the relate directive was given backwards
+								$temp_bucket = $from_bucket;
+								$temp_key = $from_key;
+								$from_bucket = $to_bucket;
+								$from_key = $to_key;
+								$to_bucket = $temp_bucket;
+								$to_key = $temp_key;
+							}
+							if(isset($existing_relation_columns[$from_bucket])) {
+								// validate the referenced SQL table exists by querying for all column names
+								$result = $this->core->db->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='$to_bucket' AND TABLE_SCHEMA=database();");
+								if($existing_relation_columns[$to_bucket] = $result->fetchAll(PDO::FETCH_COLUMN)) {
+									if($from_key=='id') {
+										$from_key = 'uuid';
+									}
+									if($to_key=='id') {
+										$to_key = 'uuid';
+									}
+									if(in_array(strtolower(trim($matches[1])), array('must', 'force', 'require', 'always'))) {
+										$list_relations["{$from_bucket}.{$from_key}"] = "{$to_bucket}.{$to_key}";
+										// append to the SELECT clause of the list query
+										if((!$show_unique_sql_table) || ($show_unique_sql_table==$to_bucket)) {
+											foreach($existing_relation_columns[$to_bucket] as $column) {
+												if($select_clause_sql_string!='') {
+													$select_clause_sql_string .= ', ';
+												}
+												$select_clause_sql_string .= "`$to_bucket`.`$column` AS `$to_bucket.$column`";
+											}
+										}
+										$join_sql_string .= " INNER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
+									} elseif(in_array($from_key, $existing_relation_columns[$from_bucket]) && in_array($to_key, $existing_relation_columns[$to_bucket])) {
+										$list_relations["{$from_bucket}.{$from_key}"] = "{$to_bucket}.{$to_key}";
+										// append to the SELECT clause of the list query
+										if((!$show_unique_sql_table) || ($show_unique_sql_table==$to_bucket)) {
+											foreach($existing_relation_columns[$to_bucket] as $column) {
+												if($select_clause_sql_string!='') {
+													$select_clause_sql_string .= ', ';
+												}
+												$select_clause_sql_string .= "`$to_bucket`.`$column` AS `$to_bucket.$column`";
+											}
+										}
+										$join_sql_string .= " LEFT OUTER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
+									}
+								} else {
+									// the related SQL Table does not exist
+									if(in_array(strtolower(trim($matches[1])), array('must', 'force', 'require', 'always'))) {
+										// this was a forced relation, so include the JOIN clause even though the query will fail
+										$join_sql_string .= " INNER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
+									}
 								}
 							} else {
 								// the related SQL Table does not exist
@@ -5939,7 +6112,7 @@ class ease_parser {
 				// INCLUDE WHEN *SQL-TABLE-COLUMN* *COMPARITOR* "quoted"  (full support for paren nesting and all boolean operators)
 				$where_sql_string = '';
 				$unprocessed_start_list_block = preg_replace_callback(
-					'/\s*include\s+when(\s+|\s*\()((\s*&&\s*|\s*and\s+|\s*\|\|\s*|\s*or\s+|\s*xor\s+|\s*)(\()*([^;]+?)\s*(===|==|=|!==|!=|is|is\s*not|>|>=|<|<=|<>|contains\s*exactly|contains|~|regexp|regex|like|ilike|rlike)\s*"(.*?)"\s*(if\s*set){0,1}\s*(\))*)*(\s*' . preg_quote($this->core->ease_block_start, '/') . '\s*' . preg_quote($this->core->global_reference_start, '/') . '.*' . preg_quote($this->core->global_reference_end, '/') . '\s*' . preg_quote($this->core->ease_block_end, '/') . '\s*)*;\s*/is',
+					'/\s*include\s+when(\s+|\s*\()((\s*&&\s*|\s*and\s+|\s*\|\|\s*|\s*or\s+|\s*xor\s+|\s*)(\()*([^;]+?)\s*(===|==|=|!==|!=|is\s*not|is|>|>=|<|<=|<>|contains\s*exactly|contains|~|regexp|regex|like|ilike|rlike|not\s*in|in)\s*"(.*?)"\s*(if\s*set){0,1}\s*(\))*)*(\s*' . preg_quote($this->core->ease_block_start, '/') . '\s*' . preg_quote($this->core->global_reference_start, '/') . '.*' . preg_quote($this->core->global_reference_end, '/') . '\s*' . preg_quote($this->core->ease_block_end, '/') . '\s*)*;\s*/is',
 					function($matches) use (&$where_sql_string, &$existing_columns, &$existing_relation_columns, &$referenced_columns, $sql_table_name) {
 						if(isset($matches[10]) && trim($matches[10])!='') {
 							$this->interpreter->inject_global_variables($matches[0]);
@@ -5950,7 +6123,7 @@ class ease_parser {
 						$where_sql_string .= '(';
 						preg_match('/\s*include\s+when\s*(.*);\s*/is', $matches[0], $matches);						
 						$remaining_condition = $matches[1];
-						while(preg_match('/^(&&|&|\|\||and\s+|or\s+|xor\s+){0,1}\s*(!|not\s+){0,1}\s*([(\s]*)([^;]+?)\s*(===|==|=|!=|!==|>|>=|<|<=|<>|is\s*not|is|contains\s*exactly|contains|~|regexp|regex|like|ilike|rlike)\s*"(.*?)"\s*(if\s*set){0,1}([)\s]*)/is', $remaining_condition, $inner_matches)) {
+						while(preg_match('/^(&&|&|\|\||and\s+|or\s+|xor\s+){0,1}\s*(!|not\s+){0,1}\s*([(\s]*)([^;]+?)\s*(===|==|=|!==|!=|>|>=|<|<=|<>|is\s*not|is|contains\s*exactly|contains|~|regexp|regex|like|ilike|rlike|not\s*in|in)\s*"(.*?)"\s*(if\s*set){0,1}([)\s]*)/is', $remaining_condition, $inner_matches)) {
 							$this->interpreter->inject_global_variables($inner_matches[4]);
 							$table_column_parts = explode('.', $inner_matches[4], 2);
 							if(count($table_column_parts)==2) {
@@ -5966,7 +6139,8 @@ class ease_parser {
 							if($table==$sql_table_name) {
 								$referenced_columns[$column] = true;
 							}
-							switch(strtolower(preg_replace('/\s+/s', ' ', trim($inner_matches[5])))) {
+							$cleansed_comparator = strtolower(preg_replace('/\s+/s', ' ', trim($inner_matches[5])));
+							switch($cleansed_comparator) {
 								case '==':
 								case '===':
 								case 'is':
@@ -5977,6 +6151,7 @@ class ease_parser {
 								case 'is not':
 									$inner_matches[5] = '<>';
 									break;
+								case 'like':
 								case 'contains exactly':
 									$inner_matches[5] = 'LIKE';
 									break;
@@ -5986,6 +6161,7 @@ class ease_parser {
 									break;
 								case '~':
 								case 'regex':
+								case 'regexp':
 									$inner_matches[5] = 'REGEXP';
 									break;
 								default:
@@ -5998,7 +6174,16 @@ class ease_parser {
 							} elseif(($table==$sql_table_name && @in_array($column, $existing_columns)) || @in_array($column, $existing_relation_columns[$table])) {
 								// the directive contained a valid column name to compare
 								// add the comparison clause to the SQL WHERE directive, maintaining any grouped conditional logic
-								if($inner_matches[5]=='contains') {
+								if($cleansed_comparator=='in' || $cleansed_comparator=='not in') {
+									$in_csv = '';
+									foreach(explode(',', $inner_matches[6]) as $sql_list_item) {
+										if($in_csv!='') {
+											$in_csv .= ',';
+										}	
+										$in_csv .= $this->core->db->quote(trim($sql_list_item));
+									}
+									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] `$table`.`$column` $cleansed_comparator ($in_csv) $inner_matches[8] ";
+								} elseif($inner_matches[5]=='contains') {
 									$value = $this->core->db->quote('%' . $inner_matches[6] . '%');
 									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] UPPER(`$table`.`$column`) LIKE UPPER($value) $inner_matches[8] ";
 								} else {
@@ -6012,7 +6197,16 @@ class ease_parser {
 							} else {
 								// the directive did not contain a valid column name to compare
 								// add the comparison clause to the SQL WHERE directive, treating the column value as a blank string, maintaining any grouped conditional logic
-								if($inner_matches[5]=='contains') {
+								if($cleansed_comparator=='in' || $cleansed_comparator=='not in') {
+									$in_csv = '';
+									foreach(explode(',', $inner_matches[6]) as $sql_list_item) {
+										if($in_csv!='') {
+											$in_csv .= ',';
+										}	
+										$in_csv .= $this->core->db->quote(trim($sql_list_item));
+									}
+									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] '' $cleansed_comparator ($in_csv) $inner_matches[8] ";
+								} elseif($inner_matches[5]=='contains') {
 									$value = $this->core->db->quote('%' . $inner_matches[6] . '%');
 									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] '' LIKE UPPER($value) $inner_matches[8] ";
 								} else {
@@ -6062,7 +6256,6 @@ class ease_parser {
 					},
 					$unprocessed_start_list_block
 				);
-
 				// SHOW *NUMBER* ROWS PER PAGE
 				$rows_per_page = null;
 				$rows_of_sql_table = null;
@@ -6072,6 +6265,7 @@ class ease_parser {
 					function($matches) use (&$rows_per_page, &$rows_of_sql_table) {
 						$rows_per_page = $matches[1];
 						if(strtolower($matches[2])!='rows') {
+							// this is a paged relation list
 							$rows_of_sql_table = preg_replace('/[^a-z0-9]+/s', '_', strtolower($matches[2]));
 						}
 						return '';
@@ -6083,7 +6277,7 @@ class ease_parser {
 				$total_var_by_column = array();
 				$page_total_var_by_column = array();
 				$unprocessed_start_list_block = preg_replace_callback(
-					'/\s*set\s+(.*?)\s+to(\s+page|)\s+total\s+of\s+([^;]+?)\s*;\s*/is',
+					'/\s*set\s+([^;]*?)\s+to(\s+page|)\s+total\s+of\s+([^;]+?)\s*;\s*/is',
 					function($matches) use (&$total_var_by_column, &$page_total_var_by_column, &$referenced_columns, $sql_table_name) {
 						$this->interpreter->inject_global_variables($matches[1]);
 						$this->interpreter->inject_global_variables($matches[3]);
@@ -6112,51 +6306,59 @@ class ease_parser {
 				$order_by_sql_string = '';
 				$unprocessed_start_list_block = preg_replace_callback(
 					'/\s*(sort|order)\s+by\s+([^;]+?)\s*;\s*/is',
-					function($matches) use (&$order_by_sql_string) {
+					function($matches) use (&$order_by_sql_string, &$sql_table_name) {
 						$this->interpreter->inject_global_variables($matches[2]);
-						$context_stack = $this->interpreter->extract_context_stack($matches[2]);
-						$matches[2] = preg_replace('/[^a-z0-9_`,\*\. ]+/is', '', strtolower($matches[2]));
-						$matches[2] = preg_replace('/in\s+descending\s+order/is', 'DESC', $matches[2]);
-						$matches[2] = preg_replace('/descending\s+order/is', 'DESC', $matches[2]);
-						$matches[2] = preg_replace('/descending/is', 'DESC', $matches[2]);
-						$matches[2] = preg_replace('/in\s+ascending\s+order/is', 'ASC', $matches[2]);
-						$matches[2] = preg_replace('/ascending\s+order/is', 'ASC', $matches[2]);
-						$matches[2] = preg_replace('/ascending/is', 'ASC', $matches[2]);
-						if(count($context_stack) > 0) {
-							if(preg_match('/^\s*(.*?)\s+desc\s*$/is', $matches[2], $inner_matches)) {
-								$matches[2] = $inner_matches[1];
-								$order_type = 'DESC';
+						$sort_by_directives	= explode(',', $matches[2]);
+						foreach($sort_by_directives as $sort_by_directive) {
+							$context_stack = $this->interpreter->extract_context_stack($sort_by_directive);
+							$sort_by_directive = preg_replace('/[^a-z0-9_`,\*\. ]+/is', '', strtolower($sort_by_directive));
+							$sort_by_directive = preg_replace('/in\s+descending\s+order/is', 'DESC', $sort_by_directive);
+							$sort_by_directive = preg_replace('/descending\s+order/is', 'DESC', $sort_by_directive);
+							$sort_by_directive = preg_replace('/descending/is', 'DESC', $sort_by_directive);
+							$sort_by_directive = preg_replace('/in\s+ascending\s+order/is', 'ASC', $sort_by_directive);
+							$sort_by_directive = preg_replace('/ascending\s+order/is', 'ASC', $sort_by_directive);
+							$sort_by_directive = preg_replace('/ascending/is', 'ASC', $sort_by_directive);
+							$table_column_parts = explode('.', $sort_by_directive, 2);
+							if(count($table_column_parts)==1) {
+								// the table name was not included, default to the main list table
+								$sort_by_directive = $sql_table_name . '.' . $sort_by_directive;
+							}
+							if(count($context_stack) > 0) {
+								if(preg_match('/^\s*(.*?)\s+desc\s*$/is', $sort_by_directive, $inner_matches)) {
+									$sort_by_directive = $inner_matches[1];
+									$order_type = 'DESC';
+								} else {
+									if(preg_match('/^\s*(.*?)\s+asc\s*$/is', $sort_by_directive, $inner_matches)) {
+										$sort_by_directive = $inner_matches[1];
+									}
+									$order_type = 'ASC';
+								}							
+								foreach($context_stack as $context) {
+									switch($context) {
+										case 'dollars':
+											$sort_by_directive = "CAST(replace(replace($sort_by_directive, '\$', ''), ',', '') AS decimal) $order_type";
+											break;
+										case 'integer':
+										case 'int':
+										case 'number':
+										case 'numeric':
+										case 'numerical':
+										case 'decimal':
+										case 'float':
+										case 'long':
+											$sort_by_directive = "CAST($sort_by_directive AS decimal) $order_type";
+											break;
+										default:
+											$sort_by_directive = "CAST($sort_by_directive AS " . strtoupper($context) . ") $order_type";
+											break;
+									}
+								}
+							}
+							if($order_by_sql_string) {
+								$order_by_sql_string .= ", $sort_by_directive ";
 							} else {
-								if(preg_match('/^\s*(.*?)\s+asc\s*$/is', $matches[2], $inner_matches)) {
-									$matches[2] = $inner_matches[1];
-								}
-								$order_type = 'ASC';
+								$order_by_sql_string = " ORDER BY $sort_by_directive ";
 							}
-							foreach($context_stack as $context) {
-								switch($context) {
-									case 'dollars':
-										$matches[2] = "CAST(replace(replace({$matches[2]}, '\$', ''), ',', '') AS decimal) $order_type";
-										break;
-									case 'integer':
-									case 'int':
-									case 'number':
-									case 'numeric':
-									case 'numerical':
-									case 'decimal':
-									case 'float':
-									case 'long':
-										$matches[2] = "CAST({$matches[2]} AS decimal) $order_type";
-										break;
-									default:
-										$matches[2] = "CAST({$matches[2]} AS " . strtoupper($context) . ") $order_type";
-										break;
-								}
-							}
-						}
-						if($order_by_sql_string) {
-							$order_by_sql_string .= ", {$matches[2]} ";
-						} else {
-							$order_by_sql_string = " ORDER BY {$matches[2]} ";
 						}
 						return '';
 					},
@@ -6211,7 +6413,7 @@ class ease_parser {
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($start_list_block));
 
 				// find the END LIST block and parse out the LIST body
-				if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+list\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
+				if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*list\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 					// END LIST found, parse out the LIST body
 					$list_body = $matches[1];
 					$list_length = strlen($matches[0]);
@@ -6224,7 +6426,7 @@ class ease_parser {
 				// parse out the LIST HEADER template
 				$list_header_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+header\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+header\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+header\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*header\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_header_template) {
 						$list_header_template = $matches[1];
 						return '';
@@ -6236,7 +6438,7 @@ class ease_parser {
 				// parse out the LIST ROW template
 				$list_row_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+row\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+row\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+row\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*row\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_row_template) {
 						$list_row_template = $matches[1];
 						return '';
@@ -6248,7 +6450,7 @@ class ease_parser {
 				// parse out the LIST FOOTER template
 				$list_footer_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+footer\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+footer\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+footer\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*footer\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_footer_template) {
 						$list_footer_template = $matches[1];
 						return '';
@@ -6260,7 +6462,7 @@ class ease_parser {
 				// parse out the LIST NO RESULTS template
 				$list_no_results_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*(start\s+|)no\s+results\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+no\s+results\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*(start\s+|)no\s+results\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*no\s*results\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_no_results_template) {
 						$list_no_results_template = $matches[2];
 						return '';
@@ -6280,6 +6482,9 @@ class ease_parser {
 				$this->unprocessed_body = substr($this->unprocessed_body, $list_length);
 
 				// query for the list data
+				if($show_unique_sql_table) {
+					$select_clause_sql_string = "DISTINCT $select_clause_sql_string";
+				}
 				if($where_sql_string) {
 					// there is a WHERE clause to add
 					$where_sql_string = "WHERE $where_sql_string";
@@ -6297,7 +6502,7 @@ class ease_parser {
 					$db_error = $this->core->db->errorInfo();
 				}
 
-				// initialize parameters for local variable injection, and output buffering
+				// initialize parameters for output buffering and local variable injection when processing tokenized EASE
 				$process_params = array();
 				if(isset($save_to_global_variable)) {
 					$process_params['save_to_global_variable'] = $save_to_global_variable;
@@ -6336,39 +6541,45 @@ class ease_parser {
 									$indexed_page = $total_pages;
 								}
 							}
-							if(!$indexed_page) {
-								$indexed_page = 1;
-							}
 						} else {
-							foreach($list_rows as $row_key=>$row) {
-								if($row[$sql_table_name . '.uuid']==$_REQUEST['index']) {
-									$indexed_page = ceil(($row_key + 1) / $rows_per_page);
-									break;
+							if($rows_per_page > 0) {
+								foreach($list_rows as $row_key=>$row) {
+									if($row[$sql_table_name . '.uuid']==$_REQUEST['index']) {
+										$indexed_page = ceil(($row_key + 1) / $rows_per_page);
+										break;
+									}
 								}
+							} else {
+								$indexed_page = 1;
 							}
 						}
 						reset($list_rows);
 					} else {
 						$indexed_page = intval(@$_REQUEST['index']);
 						if($rows_of_sql_table!=null) {
-							// calculate the total number of pages
+							// this is a paged relation list... calculate the total number of pages
+							$start_and_end_by_page = array();
 							$total_pages = 1;
+							$current_item_count = 0;
 							$current_page_item_count = 0;
 							$current_paged_item_uuid = '';
 							foreach($list_rows as $row_key=>$row) {
+								$current_item_count++;
 								if((!isset($row["$rows_of_sql_table.uuid"])) || ($row["$rows_of_sql_table.uuid"]!=$current_paged_item_uuid)) {
 									// this is a new paged item
 									if($current_page_item_count==$rows_per_page) {
 										// the current page is full... start a new page
+										$start_and_end_by_page[$total_pages]['end'] = $current_item_count - 1;
 										$total_pages++;
+										$start_and_end_by_page[$total_pages]['start'] = $current_item_count;
 										$current_page_item_count = 1;
 									} else {
 										$current_page_item_count++;
 									}
 									$current_paged_item_uuid = $row["$rows_of_sql_table.uuid"];
 								}
-							}							
-							// this is a paged relation list
+							}
+							$start_and_end_by_page[$total_pages]['end'] = $current_item_count;							
 							if((@strtolower($_REQUEST['index'])=='last') || ($indexed_page > $total_pages)) {
 								// the requested page is either past the end of the list or explicitly the last page... show the last page
 								$indexed_page = $total_pages;
@@ -6383,6 +6594,9 @@ class ease_parser {
 								$indexed_page = 1;
 							}
 						}
+					}
+					if((!isset($indexed_page)) || !$indexed_page) {
+						$indexed_page = 1;
 					}
 					// remove the page index from the query string in the REQUEST URI
 					$url_parts = parse_url($_SERVER['REQUEST_URI']);
@@ -6426,8 +6640,14 @@ class ease_parser {
 							}
 						}
 						// calculate the row range for the indexed page
-						$indexed_page_start = (($indexed_page - 1) * $rows_per_page) + 1;
-						$indexed_page_end = $indexed_page_start + ($rows_per_page - 1);
+						if($rows_of_sql_table!=null) {
+							// this is a paged relation list
+							$indexed_page_start = $start_and_end_by_page[$indexed_page]['start'];
+							$indexed_page_end = $start_and_end_by_page[$indexed_page]['end'];
+						} else {
+							$indexed_page_start = (($indexed_page - 1) * $rows_per_page) + 1;
+							$indexed_page_end = $indexed_page_start + ($rows_per_page - 1);
+						}
 					}
 					// apply the HEADER template
 					if(count($show_pagers) > 0) {
@@ -6461,13 +6681,21 @@ class ease_parser {
 								$total_column_parts = explode('.', $total_column, 2);
 								$total_var_parts = explode('.', $total_var, 2);
 								if(count($total_var_parts)==2) {
-									if(($total_var_parts[0]==$sql_table_name || $total_var_pars[0]=='row') && isset($row[$total_column])) {
-										$totals_by_var[$total_column] += preg_replace('/[^0-9\.-]+/s', '', $row[$total_column]);
+									$total_var_parts[0] = preg_replace('/[^a-z0-9]+/s', '_', strtolower(rtrim($total_var_parts[0])));
+									$total_var_parts[1] = preg_replace('/[^a-z0-9]+/s', '_', strtolower(ltrim($total_var_parts[1])));
+									if(($total_var_parts[0]==$sql_table_name || $total_var_parts[0]=='row') && isset($row[$total_column])) {
+										@$totals_by_var[$total_column] += preg_replace('/[^0-9\.-]+/s', '', $row[$total_column]);
 										$row["$sql_table_name.{$total_var_parts[1]}"] = $totals_by_var[$total_column];
+										if(!in_array($total_var_parts[0], $this->core->reserved_buckets)) {
+											$this->core->globals["{$total_var_parts[0]}.{$total_var_parts[1]}"] = $totals_by_var[$total_column];
+										}
 									}
 								} else {
 									@$totals_by_var[$total_column] += preg_replace('/[^0-9\.-]+/is', '', $row[$total_column]);
 									$row["$sql_table_name.$total_var"] = $totals_by_var[$total_column];
+									if(!in_array($total_var, $this->core->reserved_buckets)) {
+										$this->core->globals[$total_var] = $totals_by_var[$total_column];
+									}
 								}
 							}
 						}
@@ -6475,20 +6703,27 @@ class ease_parser {
 						if($rows_per_page > 0) {
 							if(($this->local_variables['rownumber'] < $indexed_page_start) || ($this->local_variables['rownumber'] > $indexed_page_end)) {
 								continue;
-							} else {
-								// apply any PAGE TOTAL directives from the START block
-								if(count($page_total_var_by_column) > 0) {
-									foreach($page_total_var_by_column as $total_column=>$total_var) {
-										$total_column_parts = explode('.', $total_column, 2);
-										$total_var_parts = explode('.', $total_var, 2);
-										if(count($total_var_parts)==2) {
-											if(($total_var_parts[0]==$sql_table_name || $total_var_pars[0]=='row') && isset($row[$total_column])) {
-												$totals_by_var[$total_column] += preg_replace('/[^0-9\.-]+/s', '', $row[$total_column]);
-												$row["$sql_table_name.{$total_var_parts[1]}"] = $totals_by_var[$total_column];
+							}
+							// apply any PAGE TOTAL directives from the START block
+							if(count($page_total_var_by_column) > 0) {
+								foreach($page_total_var_by_column as $total_column=>$total_var) {
+									$total_column_parts = explode('.', $total_column, 2);
+									$total_var_parts = explode('.', $total_var, 2);
+									if(count($total_var_parts)==2) {
+										$total_var_parts[0] = preg_replace('/[^a-z0-9]+/s', '_', strtolower(rtrim($total_var_parts[0])));
+										$total_var_parts[1] = preg_replace('/[^a-z0-9]+/s', '_', strtolower(ltrim($total_var_parts[1])));
+										if(($total_var_parts[0]==$sql_table_name || $total_var_parts[0]=='row') && isset($row[$total_column])) {
+											@$totals_by_var[$total_column] += preg_replace('/[^0-9\.-]+/s', '', $row[$total_column]);
+											$row["$sql_table_name.{$total_var_parts[1]}"] = $totals_by_var[$total_column];
+											if(!in_array($total_var_parts[0], $this->core->reserved_buckets)) {
+												$this->core->globals["{$total_var_parts[0]}.{$total_var_parts[1]}"] = $totals_by_var[$total_column];
 											}
-										} else {
-											@$totals_by_var[$total_column] += preg_replace('/[^0-9\.-]+/is', '', $row[$total_column]);
-											$row["$sql_table_name.$total_var"] = $totals_by_var[$total_column];
+										}
+									} else {
+										@$totals_by_var[$total_column] += preg_replace('/[^0-9\.-]+/is', '', $row[$total_column]);
+										$row["$sql_table_name.$total_var"] = $totals_by_var[$total_column];
+										if(!in_array($total_var, $this->core->reserved_buckets)) {
+											$this->core->globals[$total_var] = $totals_by_var[$total_column];
 										}
 									}
 								}
@@ -6687,6 +6922,62 @@ class ease_parser {
 									$join_sql_string .= " INNER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
 								}
 							}
+						} else {
+							// check if this is a relation to a table that was already related to the original relation table				
+							if((!isset($existing_relation_columns[$from_bucket])) && isset($existing_relation_columns[$to_bucket])) {
+								// the relate directive was given backwards
+								$temp_bucket = $from_bucket;
+								$temp_key = $from_key;
+								$from_bucket = $to_bucket;
+								$from_key = $to_key;
+								$to_bucket = $temp_bucket;
+								$to_key = $temp_key;
+							}
+							if(isset($existing_relation_columns[$from_bucket])) {
+								// validate the referenced SQL table exists by querying for all column names
+								$result = $this->core->db->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='$to_bucket' AND TABLE_SCHEMA=database();");
+								if($existing_relation_columns[$to_bucket] = $result->fetchAll(PDO::FETCH_COLUMN)) {
+									if($from_key=='id') {
+										$from_key = 'uuid';
+									}
+									if($to_key=='id') {
+										$to_key = 'uuid';
+									}
+									if(in_array(strtolower(trim($matches[1])), array('must', 'force', 'require', 'always'))) {
+										$list_relations["{$from_bucket}.{$from_key}"] = "{$to_bucket}.{$to_key}";
+										// append to the SELECT clause of the list query
+										foreach($existing_relation_columns[$to_bucket] as $column) {
+											if($select_clause_sql_string!='') {
+												$select_clause_sql_string .= ', ';
+											}
+											$select_clause_sql_string .= "`$to_bucket`.`$column` AS `$to_bucket.$column`";
+										}
+										$join_sql_string .= " INNER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
+									} elseif(in_array($from_key, $existing_relation_columns[$from_bucket]) && in_array($to_key, $existing_relation_columns[$to_bucket])) {
+										$list_relations["{$from_bucket}.{$from_key}"] = "{$to_bucket}.{$to_key}";
+										// append to the SELECT clause of the list query
+										foreach($existing_relation_columns[$to_bucket] as $column) {
+											if($select_clause_sql_string!='') {
+												$select_clause_sql_string .= ', ';
+											}
+											$select_clause_sql_string .= "`$to_bucket`.`$column` AS `$to_bucket.$column`";
+										}
+										$join_sql_string .= " LEFT OUTER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
+									}
+								} else {
+									// the related SQL Table does not exist
+									if(in_array(strtolower(trim($matches[1])), array('must', 'force', 'require', 'always'))) {
+										// this was a forced relation, so include the JOIN clause even though the query will fail
+										$join_sql_string .= " INNER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
+									}
+								}
+							} else {
+								// the related SQL Table does not exist
+								if(in_array(strtolower(trim($matches[1])), array('must', 'force', 'require', 'always'))) {
+									// this was a forced relation, so include the JOIN clause even though the query will fail
+									$join_sql_string .= " INNER JOIN `$to_bucket` ON `$from_bucket`.`$from_key`=`$to_bucket`.`$to_key` ";
+								}
+							}
 						}
 						return '';
 					},
@@ -6696,7 +6987,7 @@ class ease_parser {
 				// INCLUDE WHEN *SQL-TABLE-COLUMN* *COMPARITOR* "quoted"  (full support for paren nesting and all boolean operators)
 				$where_sql_string = '';
 				$unprocessed_start_checklist_block = preg_replace_callback(
-					'/\s*include\s+when(\s+|\s*\()((\s*&&\s*|\s*and\s+|\s*\|\|\s*|\s*or\s+|\s*xor\s+|\s*)(\()*([^;]+?)\s*(===|==|=|!==|!=|is|is\s*not|>|>=|<|<=|<>|contains\s*exactly|contains|~|regexp|regex|like|ilike|rlike)\s*"(.*?)"\s*(if\s*set){0,1}\s*(\))*)*(\s*' . preg_quote($this->core->ease_block_start, '/') . '\s*' . preg_quote($this->core->global_reference_start, '/') . '.*' . preg_quote($this->core->global_reference_end, '/') . '\s*' . preg_quote($this->core->ease_block_end, '/') . '\s*)*;\s*/is',
+					'/\s*include\s+when(\s+|\s*\()((\s*&&\s*|\s*and\s+|\s*\|\|\s*|\s*or\s+|\s*xor\s+|\s*)(\()*([^;]+?)\s*(===|==|=|!==|!=|is\s*not|is|>|>=|<|<=|<>|contains\s*exactly|contains|~|regexp|regex|like|ilike|rlike|not\s*in|in)\s*"(.*?)"\s*(if\s*set){0,1}\s*(\))*)*(\s*' . preg_quote($this->core->ease_block_start, '/') . '\s*' . preg_quote($this->core->global_reference_start, '/') . '.*' . preg_quote($this->core->global_reference_end, '/') . '\s*' . preg_quote($this->core->ease_block_end, '/') . '\s*)*;\s*/is',
 					function($matches) use (&$where_sql_string, &$existing_columns, &$existing_relation_columns, &$referenced_columns, $sql_table_name) {
 						if(isset($matches[10]) && trim($matches[10])!='') {
 							$this->interpreter->inject_global_variables($matches[0]);
@@ -6707,7 +6998,7 @@ class ease_parser {
 						$where_sql_string .= '(';
 						preg_match('/\s*include\s+when\s*(.*);\s*/is', $matches[0], $matches);
 						$remaining_condition = $matches[1];
-						while(preg_match('/^(&&|&|\|\||and\s+|or\s+|xor\s+){0,1}\s*(!|not\s+){0,1}\s*([(\s]*)([^;]+?)\s*(===|==|=|!=|!==|>|>=|<|<=|<>|is|is\s*not|contains\s*exactly|contains|~|regexp|regex|like|ilike|rlike)\s*"(.*?)"\s*(if\s*set){0,1}([)\s]*)/is', $remaining_condition, $inner_matches)) {
+						while(preg_match('/^(&&|&|\|\||and\s+|or\s+|xor\s+){0,1}\s*(!|not\s+){0,1}\s*([(\s]*)([^;]+?)\s*(===|==|=|!==|!=|>|>=|<|<=|<>|is\s*not|is|contains\s*exactly|contains|~|regexp|regex|like|ilike|rlike|not\s*in|in)\s*"(.*?)"\s*(if\s*set){0,1}([)\s]*)/is', $remaining_condition, $inner_matches)) {
 							$this->interpreter->inject_global_variables($inner_matches[4]);
 							$table_column_parts = explode('.', $inner_matches[4], 2);
 							if(count($table_column_parts)==2) {
@@ -6723,7 +7014,8 @@ class ease_parser {
 							if($table==$sql_table_name) {
 								$referenced_columns[$column] = true;
 							}
-							switch(strtolower(preg_replace('/\s+/s', ' ', trim($inner_matches[5])))) {
+							$cleansed_comparator = strtolower(preg_replace('/\s+/s', ' ', trim($inner_matches[5])));
+							switch($cleansed_comparator) {
 								case '==':
 								case '===':
 								case 'is':
@@ -6734,6 +7026,7 @@ class ease_parser {
 								case 'is not':
 									$inner_matches[5] = '<>';
 									break;
+								case 'like':
 								case 'contains exactly':
 									$inner_matches[5] = 'LIKE';
 									break;
@@ -6743,6 +7036,7 @@ class ease_parser {
 									break;
 								case '~':
 								case 'regex':
+								case 'regexp':
 									$inner_matches[5] = 'REGEXP';
 									break;
 								default:
@@ -6755,7 +7049,16 @@ class ease_parser {
 							} elseif(($table==$sql_table_name && @in_array($column, $existing_columns)) || @in_array($column, $existing_relation_columns[$table])) {
 								// the term contained a valid column name to compare
 								// add the comparison to the SQL WHERE clause, maintaining any grouped conditional logic
-								if($inner_matches[5]=='contains') {
+								if($cleansed_comparator=='in' || $cleansed_comparator=='not in') {
+									$value = '';
+									foreach(explode(',', $inner_matches[6]) as $sql_list_item) {
+										if($value!='') {
+											$value .= ',';
+										}	
+										$value .= $this->core->db->quote(trim($sql_list_item));
+									}
+									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] `$table`.`$column` $cleansed_comparator ($value) $inner_matches[8] ";
+								} elseif($inner_matches[5]=='contains') {
 									$value = $this->core->db->quote('%' . $inner_matches[6] . '%');
 									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] UPPER(`$table`.`$column`) LIKE UPPER($value) $inner_matches[8] ";
 								} else {
@@ -6769,7 +7072,16 @@ class ease_parser {
 							} else {
 								// the term contained an invalid column name to compare
 								// add the comparison to the SQL WHERE clause but treat the column value as a blank string, maintaining any grouped conditional logic
-								if($inner_matches[5]=='contains') {
+								if($cleansed_comparator=='in' || $cleansed_comparator=='not in') {
+									$value = '';
+									foreach(explode(',', $inner_matches[6]) as $sql_list_item) {
+										if($value!='') {
+											$value .= ',';
+										}	
+										$value .= $this->core->db->quote(trim($sql_list_item));
+									}
+									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] '' $cleansed_comparator ($value) $inner_matches[8] ";
+								} elseif($inner_matches[5]=='contains') {
 									$value = $this->core->db->quote('%' . $inner_matches[6] . '%');
 									$where_sql_string .= "$inner_matches[1] $inner_matches[2] $inner_matches[3] '' LIKE UPPER($value) $inner_matches[8] ";
 								} else {
@@ -6864,51 +7176,59 @@ class ease_parser {
 				$order_by_sql_string = '';
 				$unprocessed_start_checklist_block = preg_replace_callback(
 					'/\s*(sort|order)\s+by\s+([^;]+)\s*;\s*/is',
-					function($matches) use (&$order_by_sql_string) {
+					function($matches) use (&$order_by_sql_string, &$sql_table_name) {
 						$this->interpreter->inject_global_variables($matches[2]);
-						$context_stack = $this->interpreter->extract_context_stack($matches[2]);
-						$matches[2] = preg_replace('/[^a-z0-9_`,\*\. ]+/is', '', strtolower($matches[2]));
-						$matches[2] = preg_replace('/in\s+descending\s+order/is', 'DESC', $matches[2]);
-						$matches[2] = preg_replace('/descending\s+order/is', 'DESC', $matches[2]);
-						$matches[2] = preg_replace('/descending/is', 'DESC', $matches[2]);
-						$matches[2] = preg_replace('/in\s+ascending\s+order/is', 'ASC', $matches[2]);
-						$matches[2] = preg_replace('/ascending\s+order/is', 'ASC', $matches[2]);
-						$matches[2] = preg_replace('/ascending/is', 'ASC', $matches[2]);
-						if(count($context_stack) > 0) {
-							if(preg_match('/^\s*(.*?)\s+desc\s*$/is', $matches[2], $inner_matches)) {
-								$matches[2] = $inner_matches[1];
-								$order_type = 'DESC';
+						$sort_by_directives	= explode(',', $matches[2]);
+						foreach($sort_by_directives as $sort_by_directive) {
+							$context_stack = $this->interpreter->extract_context_stack($sort_by_directive);
+							$sort_by_directive = preg_replace('/[^a-z0-9_`,\*\. ]+/is', '', strtolower($sort_by_directive));
+							$sort_by_directive = preg_replace('/in\s+descending\s+order/is', 'DESC', $sort_by_directive);
+							$sort_by_directive = preg_replace('/descending\s+order/is', 'DESC', $sort_by_directive);
+							$sort_by_directive = preg_replace('/descending/is', 'DESC', $sort_by_directive);
+							$sort_by_directive = preg_replace('/in\s+ascending\s+order/is', 'ASC', $sort_by_directive);
+							$sort_by_directive = preg_replace('/ascending\s+order/is', 'ASC', $sort_by_directive);
+							$sort_by_directive = preg_replace('/ascending/is', 'ASC', $sort_by_directive);
+							$table_column_parts = explode('.', $sort_by_directive, 2);
+							if(count($table_column_parts)==1) {
+								// the table name was not included, default to the main list table
+								$sort_by_directive = $sql_table_name . '.' . $sort_by_directive;
+							}
+							if(count($context_stack) > 0) {
+								if(preg_match('/^\s*(.*?)\s+desc\s*$/is', $sort_by_directive, $inner_matches)) {
+									$sort_by_directive = $inner_matches[1];
+									$order_type = 'DESC';
+								} else {
+									if(preg_match('/^\s*(.*?)\s+asc\s*$/is', $sort_by_directive, $inner_matches)) {
+										$sort_by_directive = $inner_matches[1];
+									}
+									$order_type = 'ASC';
+								}
+								foreach($context_stack as $context) {
+									switch($context) {
+										case 'dollars':
+											$sort_by_directive = "CAST(replace(replace($sort_by_directive, '\$', ''), ',', '') AS decimal) $order_type";
+											break;
+										case 'integer':
+										case 'int':
+										case 'number':
+										case 'numeric':
+										case 'numerical':
+										case 'decimal':
+										case 'float':
+										case 'long':
+											$sort_by_directive = "CAST($sort_by_directive AS decimal) $order_type";
+											break;
+										default:
+											$sort_by_directive = "CAST($sort_by_directive AS " . strtoupper($context) . ") $order_type";
+											break;
+									}
+								}
+							}
+							if($order_by_sql_string) {
+								$order_by_sql_string .= ", $sort_by_directive ";
 							} else {
-								if(preg_match('/^\s*(.*?)\s+asc\s*$/is', $matches[2], $inner_matches)) {
-									$matches[2] = $inner_matches[1];
-								}
-								$order_type = 'ASC';
+								$order_by_sql_string = " ORDER BY $sort_by_directive ";
 							}
-							foreach($context_stack as $context) {
-								switch($context) {
-									case 'dollars':
-										$matches[2] = "CAST(replace(replace({$matches[2]}, '\$', ''), ',', '') AS decimal) $order_type";
-										break;
-									case 'integer':
-									case 'int':
-									case 'number':
-									case 'numeric':
-									case 'numerical':
-									case 'decimal':
-									case 'float':
-									case 'long':
-										$matches[2] = "CAST({$matches[2]} AS decimal) $order_type";
-										break;
-									default:
-										$matches[2] = "CAST({$matches[2]} AS " . strtoupper($context) . ") $order_type";
-										break;
-								}
-							}
-						}
-						if($order_by_sql_string) {
-							$order_by_sql_string .= ", {$matches[2]} ";
-						} else {
-							$order_by_sql_string = " ORDER BY {$matches[2]} ";
 						}
 						return '';
 					},
@@ -7279,7 +7599,7 @@ class ease_parser {
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($start_checklist_block));
 
 				// find the END CHECKLIST FORM block and parse out the CHECKLIST FORM body
-				if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+check\s*list(\s+form|)\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
+				if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*check\s*list(\s*form|)\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 					// END CHECKLIST FORM found, parse out the CHECKLIST FORM body
 					$list_body = $matches[1];
 					$list_length = strlen($matches[0]);
@@ -7422,7 +7742,7 @@ class ease_parser {
 				// parse out the CHECKLIST FORM HEADER template
 				$list_header_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+header\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+header\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+header\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*header\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_header_template) {
 						$list_header_template = $matches[1];
 						return '';
@@ -7434,7 +7754,7 @@ class ease_parser {
 				// parse out the CHECKLIST FORM ROW template
 				$list_row_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+row\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+row\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+row\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*row\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_row_template) {
 						$list_row_template = $matches[1];
 						return '';
@@ -7446,7 +7766,7 @@ class ease_parser {
 				// parse out the CHECKLIST FORM FOOTER template
 				$list_footer_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+footer\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+footer\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+footer\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*footer\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_footer_template) {
 						$list_footer_template = $matches[1];
 						return '';
@@ -7458,7 +7778,7 @@ class ease_parser {
 				// parse out the CHECKLIST FORM NO RESULTS template
 				$list_no_results_template = '';
 				$list_body = preg_replace_callback(
-					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*(start\s+|)no\s+results\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s+no\s+results\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+					'/' . preg_quote($this->core->ease_block_start, '/') . '\s*(start\s+|)no\s+results\s*' . preg_quote($this->core->ease_block_end, '/') . '(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*no\s*results\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 					function($matches) use (&$list_no_results_template) {
 						$list_no_results_template = $matches[2];
 						return '';
@@ -7712,6 +8032,8 @@ class ease_parser {
 		###############################################
 		// a valid EASE command was not found at the start of the EASE block
 		// extract the first line of the EASE block, inject any global variables then append that value to the output buffer
+		// TODO!! check for code that doesn't inject any global variables, and contains the stop sequence for EASE blocks
+		//  * example:    for a start list block with syntax error, the parser will hang on <# start row #> tag as it tries to process each line as EASE
 		preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '(\V*)(\v*)(.*)/s', $this->unprocessed_body, $matches);
 		$this->interpreter->inject_global_variables($matches[1]);
 		$this->output_buffer .= $matches[1];
@@ -7729,7 +8051,7 @@ class ease_parser {
 
 	// this function is called when $this->unprocessed_body is known to begin with the start sequence of a PHP block
 	function process_php_block() {
-		// tokenize the PHP code block to find the end sequence for a PHP Block
+		// tokenize the PHP code, stopping when an end sequence for a PHP Block is found
 		$tokens = token_get_all($this->unprocessed_body);
 		$php_block_size = 0;
 		$php_block = '';
@@ -7740,7 +8062,8 @@ class ease_parser {
 			} else {
 				$php_block_size += strlen($current_token[1]);
 				if(in_array($current_token[1], $this->php_functions) && $current_token[0]===T_STRING && $previous_non_whitespace_token_type!==T_OBJECT_OPERATOR && $previous_non_whitespace_token_type!==T_DOUBLE_COLON && $previous_non_whitespace_token_type!==T_FUNCTION) {
-					$php_block .= '$this->' . $current_token[1];
+					// the token was a function call to an EASE Framework core function
+					$php_block .= '$GLOBALS[\'__ease_parser\']->' . $current_token[1];
 				} else {
 					$php_block .= $current_token[1];
 				}
@@ -7749,29 +8072,38 @@ class ease_parser {
 				}
 			}
 			if(is_array($current_token) && $current_token[0]===T_CLOSE_TAG) {
+				// the token was an end sequence for a PHP Block... done
 				break;
 			}
 		}
 		// remove the PHP Block from the remaining unprocessed body
 		$this->unprocessed_body = substr($this->unprocessed_body, $php_block_size);
-		// remove the PHP start and end sequences from the code block
-		$php_block = trim($php_block);
-		$php_block = substr($php_block, 5);
-		$php_block = substr($php_block, 0, -2);
-		// evaluate the PHP code block in a localized namespace
-		$php_block = '$localized_php_block = function() { ' . $php_block . ' }; $localized_php_block();';
-		// turn on PHP output buffering to record any output generated from evaluating the PHP code
-		ob_start();
-		$eval_result = @eval($php_block);
-		if($eval_result===false) {
-			// there was an error evaluating the PHP code block
-			$error = error_get_last();
-			$this->output_buffer .= "<div style='color:red; font-weight:bold;'>PHP Error!  line {$error['line']}: " . htmlspecialchars($error['message']) . "</div>";
+		// only evaluate the PHP Block if PHP hasn't been disabled
+		if(!$this->core->php_disabled) {
+			// remove the start and end sequences from the PHP Block
+			$php_block = trim($php_block);
+			$php_block = substr($php_block, 5);
+			$php_block = substr($php_block, 0, -2);
+			// evaluate the PHP Block in a localized namespace
+			$GLOBALS['__ease_parser'] = &$this;
+			$php_block = '$localized_php_block = function() { ' . $php_block . ' }; $localized_php_block();';
+			// turn on PHP output buffering to record any output generated from evaluating the PHP Block
+			ob_start();
+			try {
+				$eval_result = eval($php_block);
+			} catch(Exception $e) {
+				$this->output_buffer .= "<div style='color:red; font-weight:bold;'>PHP EXCEPTION! " . htmlspecialchars($e->getMessage()) . '</div>';
+			}
+			if($eval_result===false) {
+				// there was an error evaluating the PHP Block
+				$error = error_get_last();
+				$this->output_buffer .= "<div style='color:red; font-weight:bold;'>PHP Error!  line {$error['line']}: " . htmlspecialchars($error['message']) . '</div>';
+			}
+			// dump any generated output to the output buffer
+			$this->output_buffer .= ob_get_contents();
+			// turn off output buffering... done
+			ob_end_clean();			
 		}
-		// dump any generated output to the output buffer
-		$this->output_buffer .= ob_get_contents();
-		// turn off output buffering
-		ob_end_clean();
 	}
 
 	// this function will parse EASE & PHP in a string and return a tokenized array
@@ -7848,15 +8180,16 @@ class ease_parser {
 				}
 			}
 			if(@strlen($matches[2]) > 0) {
-				// the start sequence of PHP was found; print any preceeding text
+				// the start sequence of a PHP Block was found
 				if(@strlen($matches[1]) > 0) {
+					// add a print command to output any text preceeding the PHP Block
 					$tokenized_ease[] = array('print'=>$matches[1]);
 				}
-				// strip any text preceeding the start sequence of PHP from the remaining unprocessed string
+				// strip any text preceeding the start sequence of the PHP Block from the remaining unprocessed string
 				$string = $matches[2] . substr($string, $new_line_position);
 				// the remaining uprocessed string now begins with a PHP Block; process the PHP Block
 				$php_tokens = token_get_all($string);
-				// parse the PHP code block contents to find the first PHP close tag
+				// parse the PHP Block contents to find the first PHP close tag
 				$php_block = '';
 				$php_block_size = 0;
 				$previous_non_whitespace_token_type = null;
@@ -7868,11 +8201,13 @@ class ease_parser {
 					} elseif(is_array($current_token)) {
 						$php_block_size += strlen($current_token[1]);
 						if(in_array($current_token[1], $this->php_functions) && $current_token[0]===T_STRING && $previous_non_whitespace_token_type!==T_OBJECT_OPERATOR) {
-							$php_block .= '$this->' . $current_token[1];
+							// the token was a function call to an EASE Framework core function
+							$php_block .= '$GLOBALS[\'__ease_parser\']->' . $current_token[1];
 						} else {
 							$php_block .= $current_token[1];
 						}
 						if($current_token[0]===T_CLOSE_TAG) {
+							// the token was the end sequence of a PHP Block... done
 							break;
 						}
 						if($current_token[0]!==T_WHITESPACE) {
@@ -7885,7 +8220,7 @@ class ease_parser {
 				$php_block = substr($php_block, 5);
 				$php_block = trim(substr($php_block, 0, -2));
 				$tokenized_ease[] = array('php_block'=>$php_block);
-				// remove the PHP code block from the remaining string to be tokenized
+				// remove the PHP Block from the remaining string to be tokenized
 				$string = substr($string, $php_block_size);
 				continue;
 			}
@@ -7934,7 +8269,7 @@ class ease_parser {
 
 				###############################################
 				##	IF ELSE - Conditional EASE blocks
-				if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*if\s*\(\s*(.*?)\s*\)\s*\{(.*?)\}\s*((?:else\s*if\s*\(\s*.*?\s*\)\s*\{.*?\}\s*)*)(?:else\s*\{(.*?)\}\s*|)(' . preg_quote($this->core->ease_block_end, '/') . '|[^;]+?;\s*' . preg_quote($this->core->ease_block_end, '/') . ')/is', $string, $matches)) {
+				if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*if\s*\(\s*(.*?)\s*\)\s*\{(.*?)\}\s*((?:else\s*if\s*\(\s*.*?\s*\)\s*\{.*?\}\s*)*)(?:else\s*\{(.*?)\}\s*|)(' . preg_quote($this->core->ease_block_end, '/') . '|.*?;\s*' . preg_quote($this->core->ease_block_end, '/') . ')/is', $string, $matches)) {
 					// initialize variables to store the EASE blocks by condition, the else catchall conditional EASE block, and the EASE block for any matched condition
 					$conditions = array();
 					// process the regular expression matches to build an array of conditions, and any else condition
@@ -8085,7 +8420,7 @@ class ease_parser {
 				###############################################
 				##	INCLUDE "QUOTED-STRING"
 				if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*include\s*"(.*?)"\s*[\.;]{0,1}\s*/is', $string, $matches)) {
-					// inject any global variables into the value to print
+					// inject any global variables into the page filepath
 					$this->interpreter->inject_global_variables($matches[1]);
 					$included_file_content = '';
 					// get the content of the included file... don't allow doubly including the local header.espx or footer.espx files
@@ -8099,6 +8434,24 @@ class ease_parser {
 					} 
 					// replace the INCLUDE tag from the remaining unprocessed string with the contents of the included file
 					$string = $included_file_content . $this->core->ease_block_start . ' ' . substr($string, strlen($matches[0]));
+					continue;
+				}
+				
+				###############################################
+				##	GRANT / REVOKE ACCESS
+				if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*(grant|give|permit|allow|revoke)\s*access\s*to\s+(' . preg_quote($this->core->ease_block_start, '/') . '.*?' . preg_quote($this->core->ease_block_end, '/') . '|([^;]+?))\s*([;]{0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '|;)\s*/is', $string, $matches)) {
+					// inject any global variables into the session.key lock reference
+					$this->interpreter->inject_global_variables($matches[2]);
+					switch(strtolower($matches[1])) {
+						case 'revoke':
+							$tokenized_ease[] = array('revoke_access'=>$matches[2]);
+							break;
+						default:
+							$tokenized_ease[] = array('grant_access'=>$matches[2]);
+							break;
+					}
+					// remove the tag from the remaining unprocessed body
+					$string = ($matches[4]==';' ? $this->core->ease_block_start : '') . substr($string, strlen($matches[0]));
 					continue;
 				}
 				
@@ -8417,7 +8770,11 @@ class ease_parser {
 		// process any parameters for variable injection and output buffering
 		if(isset($params['save_to_global_variable']) && trim($params['save_to_global_variable'])!='') {
 			$save_to_global_variable = $params['save_to_global_variable'];
+			if(!isset($this->core->globals[$save_to_global_variable])) {
+				$this->core->globals[$save_to_global_variable] = '';
+			}
 		}
+		$no_local_injection = (isset($params['no_local_injection']) && $params['no_local_injection']);
 		if(isset($params['sql_table_name']) && trim($params['sql_table_name'])!='') {
 			$inject_local_sql_row_variables = true;
 			if(!isset($params['row']) || !is_array($params['row'])) {
@@ -8441,13 +8798,16 @@ class ease_parser {
 						switch($keyword) {
 							case 'print':
 								if(is_array($directives)) {
+									// the print command includes an array of directives, implying a context is involved
 									$this->interpreter->inject_global_variables($directives['string']);
-									if(isset($inject_local_sql_row_variables)) {
-										$this->interpreter->inject_local_sql_row_variables($directives['string'], $params['row'], $params['sql_table_name'], $this->local_variables);
-									} elseif(isset($inject_local_spreadsheet_row_variables)) {
-										$this->interpreter->inject_local_spreadsheet_row_variables($directives['string'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-									} elseif(isset($inject_local_spreadsheet_variables)) {
-										$this->interpreter->inject_local_spreadsheet_variables($directives['string'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									if(!$no_local_injection) {
+										if(isset($inject_local_sql_row_variables)) {
+											$this->interpreter->inject_local_sql_row_variables($directives['string'], $params['row'], $params['sql_table_name'], $this->local_variables);
+										} elseif(isset($inject_local_spreadsheet_row_variables)) {
+											$this->interpreter->inject_local_spreadsheet_row_variables($directives['string'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+										} elseif(isset($inject_local_spreadsheet_variables)) {
+											$this->interpreter->inject_local_spreadsheet_variables($directives['string'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+										}
 									}
 									$this->interpreter->apply_context_stack($directives['string'], $directives['context_stack']);
 									if(isset($save_to_global_variable)) {
@@ -8457,12 +8817,14 @@ class ease_parser {
 									}
 								} else {
 									$this->interpreter->inject_global_variables($directives);
-									if(isset($inject_local_sql_row_variables)) {
-										$this->interpreter->inject_local_sql_row_variables($directives, $params['row'], $params['sql_table_name'], $this->local_variables);
-									} elseif(isset($inject_local_spreadsheet_row_variables)) {
-										$this->interpreter->inject_local_spreadsheet_row_variables($directives, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-									} elseif(isset($inject_local_spreadsheet_variables)) {
-										$this->interpreter->inject_local_spreadsheet_variables($directives, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									if(!$no_local_injection) {
+										if(isset($inject_local_sql_row_variables)) {
+											$this->interpreter->inject_local_sql_row_variables($directives, $params['row'], $params['sql_table_name'], $this->local_variables);
+										} elseif(isset($inject_local_spreadsheet_row_variables)) {
+											$this->interpreter->inject_local_spreadsheet_row_variables($directives, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+										} elseif(isset($inject_local_spreadsheet_variables)) {
+											$this->interpreter->inject_local_spreadsheet_variables($directives, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+										}
 									}
 									if(isset($save_to_global_variable)) {
 										$this->core->globals[$save_to_global_variable] .= $directives;
@@ -8472,7 +8834,6 @@ class ease_parser {
 								}
 								break;
 							case 'conditional':
-								// any conditional block will have all the conditional tokens immediately placed in the process tokens array
 								$matched_condition = false;
 								$process_ease_block = null;
 								foreach($directives['if_conditions'] as $condition=>$conditional_ease) {
@@ -8495,20 +8856,24 @@ class ease_parser {
 											$matches[5] = '==';
 										}
 										$this->interpreter->inject_global_variables($matches[4]);
-										if(isset($inject_local_sql_row_variables)) {
-											$this->interpreter->inject_local_sql_row_variables($matches[4], $params['row'], $params['sql_table_name'], $this->local_variables);
-										} elseif(isset($inject_local_spreadsheet_row_variables)) {
-											$this->interpreter->inject_local_spreadsheet_row_variables($matches[4], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-										} elseif(isset($inject_local_spreadsheet_variables)) {
-											$this->interpreter->inject_local_spreadsheet_variables($matches[4], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+										if(!$no_local_injection) {
+											if(isset($inject_local_sql_row_variables)) {
+												$this->interpreter->inject_local_sql_row_variables($matches[4], $params['row'], $params['sql_table_name'], $this->local_variables);
+											} elseif(isset($inject_local_spreadsheet_row_variables)) {
+												$this->interpreter->inject_local_spreadsheet_row_variables($matches[4], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+											} elseif(isset($inject_local_spreadsheet_variables)) {
+												$this->interpreter->inject_local_spreadsheet_variables($matches[4], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+											}
 										}
 										$this->interpreter->inject_global_variables($matches[6]);
-										if(isset($inject_local_sql_row_variables)) {
-											$this->interpreter->inject_local_sql_row_variables($matches[6], $params['row'], $params['sql_table_name'], $this->local_variables);
-										} elseif(isset($inject_local_spreadsheet_row_variables)) {
-											$this->interpreter->inject_local_spreadsheet_row_variables($matches[6], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-										} elseif(isset($inject_local_spreadsheet_variables)) {
-											$this->interpreter->inject_local_spreadsheet_variables($matches[6], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+										if(!$no_local_injection) {
+											if(isset($inject_local_sql_row_variables)) {
+												$this->interpreter->inject_local_sql_row_variables($matches[6], $params['row'], $params['sql_table_name'], $this->local_variables);
+											} elseif(isset($inject_local_spreadsheet_row_variables)) {
+												$this->interpreter->inject_local_spreadsheet_row_variables($matches[6], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+											} elseif(isset($inject_local_spreadsheet_variables)) {
+												$this->interpreter->inject_local_spreadsheet_variables($matches[6], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+											}
 										}
 										$php_condition_string .= $matches[1]
 											. $matches[2]
@@ -8545,23 +8910,55 @@ class ease_parser {
 								break;
 							case 'redirect':
 								$this->interpreter->inject_global_variables($directives);
-								if(isset($inject_local_sql_row_variables)) {
-									$this->interpreter->inject_local_sql_row_variables($directives, $params['row'], $params['sql_table_name'], $this->local_variables);
-								} elseif(isset($inject_local_spreadsheet_row_variables)) {
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-								} elseif(isset($inject_local_spreadsheet_variables)) {
-									$this->interpreter->inject_local_spreadsheet_variables($directives, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives, $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
 								}
 								header("Location: $directives");
 								exit;
+							case 'grant_access':
+								$this->interpreter->inject_global_variables($directives);
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives, $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
+								}
+								$directives = trim(preg_replace('/[^a-z0-9]+/is', '_', strtolower($directives)), '_');
+								$_SESSION['ease_memberships.' . $directives] = 'unlocked';								
+								break;
+							case 'revoke_access':
+								$this->interpreter->inject_global_variables($directives);
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives, $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
+								}
+								$directives = trim(preg_replace('/[^a-z0-9]+/is', '_', strtolower($directives)), '_');
+								unset($_SESSION['ease_memberships.' . $directives]);
+								break;
 							case 'set':
 								$this->interpreter->inject_global_variables($directives['value']);
-								if(isset($inject_local_sql_row_variables)) {
-									$this->interpreter->inject_local_sql_row_variables($directives['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
-								} elseif(isset($inject_local_spreadsheet_row_variables)) {
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-								} elseif(isset($inject_local_spreadsheet_variables)) {
-									$this->interpreter->inject_local_spreadsheet_variables($directives['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
 								}
 								switch($directives['bucket']) {
 									case 'session':
@@ -8571,16 +8968,33 @@ class ease_parser {
 										setcookie($directives['key'], $directives['value'], time() + 60 * 60 * 24 * 365, '/');
 										$_COOKIE[$directives['key']] = $directives['value'];
 										break;
+									case 'cache':
+										if($this->core->memcache) {
+											$this->core->memcache->set($directives['key'], $directives['value']);
+										}
+										break;
+									case 'system':
+									case 'config':
+										// do nothing, global system and config values can not be set by EASE code
+										break;
+									default:
+										if($directives['bucket']!='') {
+											$this->core->globals["{$directives['bucket']}.{$directives['key']}"] = $directives['value'];
+										} else {
+											$this->core->globals[$directives['key']] = $directives['value'];
+										}
 								}
 								break;
 							case 'local_set':
 								$this->interpreter->inject_global_variables($directives['value']);
-								if(isset($inject_local_sql_row_variables)) {
-									$this->interpreter->inject_local_sql_row_variables($directives['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
-								} elseif(isset($inject_local_spreadsheet_row_variables)) {
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-								} elseif(isset($inject_local_spreadsheet_variables)) {
-									$this->interpreter->inject_local_spreadsheet_variables($directives['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
 								}
 								$this->local_variables[$directives['key']] = $directives['value'];
 								break;
@@ -8589,12 +9003,14 @@ class ease_parser {
 								break;
 							case 'local_set_to_expression':
 								$this->interpreter->inject_global_variables($directives['value']);
-								if(isset($inject_local_sql_row_variables)) {
-									$this->interpreter->inject_local_sql_row_variables($directives['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
-								} elseif(isset($inject_local_spreadsheet_row_variables)) {
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-								} elseif(isset($inject_local_spreadsheet_variables)) {
-									$this->interpreter->inject_local_spreadsheet_variables($directives['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
 								}
 								$value = null;
 								if(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $directives['value'])) {
@@ -8620,12 +9036,14 @@ class ease_parser {
 									$this->interpreter->inject_global_variables($directives['of']);
 									foreach($params['rows'] as $row) {
 										$local_set_to_total_of = $directives['of'];
-										if(isset($inject_local_sql_row_variables)) {
-											$this->interpreter->inject_local_sql_row_variables($local_set_to_total_of, $row, $params['sql_table_name'], $this->local_variables);
-										} elseif(isset($inject_local_spreadsheet_row_variables)) {
-											$this->interpreter->inject_local_spreadsheet_row_variables($local_set_to_total_of, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-										} elseif(isset($inject_local_spreadsheet_variables)) {
-											$this->interpreter->inject_local_spreadsheet_variables($local_set_to_total_of, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+										if(!$no_local_injection) {
+											if(isset($inject_local_sql_row_variables)) {
+												$this->interpreter->inject_local_sql_row_variables($local_set_to_total_of, $row, $params['sql_table_name'], $this->local_variables);
+											} elseif(isset($inject_local_spreadsheet_row_variables)) {
+												$this->interpreter->inject_local_spreadsheet_row_variables($local_set_to_total_of, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+											} elseif(isset($inject_local_spreadsheet_variables)) {
+												$this->interpreter->inject_local_spreadsheet_variables($local_set_to_total_of, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+											}
 										}
 										$this->local_variables[$directives['key']] += $local_set_to_total_of;
 									}
@@ -8637,73 +9055,96 @@ class ease_parser {
 							case 'local_round':
 								if(isset($directives['decimals'])) {
 									$this->interpreter->inject_global_variables($directives['decimals']);
-									if(isset($inject_local_sql_row_variables)) {
-										$this->interpreter->inject_local_sql_row_variables($directives['decimals'], $params['row'], $params['sql_table_name'], $this->local_variables);
-									} elseif(isset($inject_local_spreadsheet_row_variables)) {
-										$this->interpreter->inject_local_spreadsheet_row_variables($directives['decimals'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-									} elseif(isset($inject_local_spreadsheet_variables)) {
-										$this->interpreter->inject_local_spreadsheet_variables($directives['decimals'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									if(!$no_local_injection) {
+										if(isset($inject_local_sql_row_variables)) {
+											$this->interpreter->inject_local_sql_row_variables($directives['decimals'], $params['row'], $params['sql_table_name'], $this->local_variables);
+										} elseif(isset($inject_local_spreadsheet_row_variables)) {
+											$this->interpreter->inject_local_spreadsheet_row_variables($directives['decimals'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+										} elseif(isset($inject_local_spreadsheet_variables)) {
+											$this->interpreter->inject_local_spreadsheet_variables($directives['decimals'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+										}
 									}
 									$this->local_variables[$directives['key']] = round($this->local_variables[$directives['key']], $directives['decimals']);
 								}
 								break;
 							case 'php_block':
-								$php_block = '$localized_php_block = function() { ' . $directives . ' }; $localized_php_block();';
-								// turn on PHP output buffering to record any output generated from evaluating the PHP code
-								ob_start();
-								$eval_result = @eval($php_block);
-								if($eval_result===false) {
-									// there was an error evaluating the PHP code block
-									// TODO!! allow EASE config settings for suppressing errors
-									$error = error_get_last();
-									if(isset($save_to_global_variable)) {
-										$this->core->globals[$save_to_global_variable] .= "<div style='color:red; font-weight:bold;'>PHP Error!  line {$error['line']}: " . htmlspecialchars($error['message']) . "</div>";
-									} else {
-										$this->output_buffer .= "<div style='color:red; font-weight:bold;'>PHP Error!  line {$error['line']}: " . htmlspecialchars($error['message']) . "</div>";
-									}
-								}
-								// dump any generated output
-								if(isset($save_to_global_variable)) {
-									$this->core->globals[$save_to_global_variable] .= ob_get_contents();
+								// process the PHP Block
+								if($this->core->php_disabled) {
+									// do nothing, PHP evaluation was disabled
 								} else {
-									$this->output_buffer .= ob_get_contents();
+									$GLOBALS['__ease_parser'] = &$this;
+									$php_block = '$localized_php_block = function() { ' . $directives . ' }; $localized_php_block();';
+									// turn on PHP output buffering to record any output generated from evaluating the PHP Block
+									ob_start();
+									try {
+										$eval_result = eval($php_block);
+									} catch(Exception $e) {
+										if(isset($save_to_global_variable)) {
+											$this->core->globals[$save_to_global_variable] .= "<div style='color:red; font-weight:bold;'>PHP EXCEPTION! " . htmlspecialchars($e->getMessage()) . '</div>';
+										} else {
+											$this->output_buffer .= "<div style='color:red; font-weight:bold;'>PHP EXCEPTION! " . htmlspecialchars($e->getMessage()) . '</div>';
+										}
+									}
+									if($eval_result===false) {
+										// there was an error evaluating the PHP Block
+										// TODO!! allow EASE config settings for suppressing errors
+										$error = error_get_last();
+										if(isset($save_to_global_variable)) {
+											$this->core->globals[$save_to_global_variable] .= "<div style='color:red; font-weight:bold;'>PHP Error!  line {$error['line']}: " . htmlspecialchars($error['message']) . "</div>";
+										} else {
+											$this->output_buffer .= "<div style='color:red; font-weight:bold;'>PHP Error!  line {$error['line']}: " . htmlspecialchars($error['message']) . "</div>";
+										}
+									}
+									// dump any generated output
+									if(isset($save_to_global_variable)) {
+										$this->core->globals[$save_to_global_variable] .= ob_get_contents();
+									} else {
+										$this->output_buffer .= ob_get_contents();
+									}
+									// turn off output buffering
+									ob_end_clean();
 								}
-								// turn off output buffering
-								ob_end_clean();
 								break;
 							case 'send_email':
 								foreach(array_keys($directives) as $send_email_key) {
 									$this->interpreter->inject_global_variables($directives[$send_email_key]);
-									if(isset($inject_local_sql_row_variables)) {
-										$this->interpreter->inject_local_sql_row_variables($directives[$send_email_key], $params['row'], $params['sql_table_name'], $this->local_variables);
-									} elseif(isset($inject_local_spreadsheet_row_variables)) {
-										$this->interpreter->inject_local_spreadsheet_row_variables($directives[$send_email_key], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-									} elseif(isset($inject_local_spreadsheet_variables)) {
-										$this->interpreter->inject_local_spreadsheet_variables($directives[$send_email_key], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									if(!$no_local_injection) {
+										if(isset($inject_local_sql_row_variables)) {
+											$this->interpreter->inject_local_sql_row_variables($directives[$send_email_key], $params['row'], $params['sql_table_name'], $this->local_variables);
+										} elseif(isset($inject_local_spreadsheet_row_variables)) {
+											$this->interpreter->inject_local_spreadsheet_row_variables($directives[$send_email_key], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+										} elseif(isset($inject_local_spreadsheet_variables)) {
+											$this->interpreter->inject_local_spreadsheet_variables($directives[$send_email_key], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+										}
 									}
 								}
 								$result = $this->core->send_email($directives);
 								break;
+							case 'apply_spreadsheet_record':
+								$this->core->html_dump($directives, 'apply_spreadsheet_record directives');
+								break;	
 							case 'create_spreadsheet_record':
 								$this->interpreter->inject_global_variables($directives['spreadsheet_id']);
 								$this->interpreter->inject_global_variables($directives['spreadsheet_name']);
 								$this->interpreter->inject_global_variables($directives['worksheet_name']);
 								$this->interpreter->inject_global_variables($directives['as']);
-								if(isset($inject_local_sql_row_variables)) {
-									$this->interpreter->inject_local_sql_row_variables($directives['spreadsheet_id'], $params['row'], $params['sql_table_name'], $this->local_variables);
-									$this->interpreter->inject_local_sql_row_variables($directives['spreadsheet_name'], $params['row'], $params['sql_table_name'], $this->local_variables);
-									$this->interpreter->inject_local_sql_row_variables($directives['worksheet_name'], $params['row'], $params['sql_table_name'], $this->local_variables);
-									$this->interpreter->inject_local_sql_row_variables($directives['as'], $params['row'], $params['sql_table_name'], $this->local_variables);
-								} elseif(isset($inject_local_spreadsheet_row_variables)) {
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives['spreadsheet_id'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives['spreadsheet_name'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives['worksheet_name'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives['as'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-								} elseif(isset($inject_local_spreadsheet_variables)) {
-									$this->interpreter->inject_local_spreadsheet_variables($directives['spreadsheet_id'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
-									$this->interpreter->inject_local_spreadsheet_variables($directives['spreadsheet_name'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
-									$this->interpreter->inject_local_spreadsheet_variables($directives['worksheet_name'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
-									$this->interpreter->inject_local_spreadsheet_variables($directives['as'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives['spreadsheet_id'], $params['row'], $params['sql_table_name'], $this->local_variables);
+										$this->interpreter->inject_local_sql_row_variables($directives['spreadsheet_name'], $params['row'], $params['sql_table_name'], $this->local_variables);
+										$this->interpreter->inject_local_sql_row_variables($directives['worksheet_name'], $params['row'], $params['sql_table_name'], $this->local_variables);
+										$this->interpreter->inject_local_sql_row_variables($directives['as'], $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['spreadsheet_id'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['spreadsheet_name'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['worksheet_name'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['as'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives['spreadsheet_id'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+										$this->interpreter->inject_local_spreadsheet_variables($directives['spreadsheet_name'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+										$this->interpreter->inject_local_spreadsheet_variables($directives['worksheet_name'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+										$this->interpreter->inject_local_spreadsheet_variables($directives['as'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
 								}
 								$listFeed = null;
 								$new_row = array();
@@ -8712,12 +9153,14 @@ class ease_parser {
 									foreach($directives['set'] as $set_command) {
 										if($set_command['bucket']==$directives['as']) {
 											$this->interpreter->inject_global_variables($set_command['value']);
-											if(isset($inject_local_sql_row_variables)) {
-												$this->interpreter->inject_local_sql_row_variables($set_command['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
-											} elseif(isset($inject_local_spreadsheet_row_variables)) {
-												$this->interpreter->inject_local_spreadsheet_row_variables($set_command['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-											} elseif(isset($inject_local_spreadsheet_variables)) {
-												$this->interpreter->inject_local_spreadsheet_variables($set_command['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+											if(!$no_local_injection) {
+												if(isset($inject_local_sql_row_variables)) {
+													$this->interpreter->inject_local_sql_row_variables($set_command['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
+												} elseif(isset($inject_local_spreadsheet_row_variables)) {
+													$this->interpreter->inject_local_spreadsheet_row_variables($set_command['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+												} elseif(isset($inject_local_spreadsheet_variables)) {
+													$this->interpreter->inject_local_spreadsheet_variables($set_command['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+												}
 											}
 											$context_stack = $this->interpreter->extract_context_stack($set_command['value']);
 											if(preg_match('/^\s*"(.*)"\s*$/s', $set_command['value'], $matches)) {
@@ -8838,10 +9281,11 @@ class ease_parser {
 										$try_count = 0;
 										while($new_spreadsheet===null && $try_count<=5) {
 											if($try_count > 0) {
+												// apply exponential backoff
 												sleep((2 ^ ($try_count - 1)) + (mt_rand(1, 1000) / 1000));
 											}
-											$try_count++;
 											try {
+												$try_count++;
 												$new_spreadsheet = $service->files->insert($file, array('data'=>$header_row_csv, 'mimeType'=>'text/csv', 'convert'=>'true', 'uploadType'=>'multipart'));
 											} catch(Google_Service_Exception $e) {
 												continue;
@@ -8965,14 +9409,19 @@ class ease_parser {
 							case 'delete_spreadsheet_record':
 								$this->core->html_dump($directives, 'delete_spreadsheet_record directives');
 								break;
+							case 'apply_sql_record':
+								$this->core->html_dump($directives, 'apply_sql_record directives');
+								break;
 							case 'create_sql_record':
 								$this->interpreter->inject_global_variables($directives['for']);
-								if(isset($inject_local_sql_row_variables)) {
-									$this->interpreter->inject_local_sql_row_variables($directives['for'], $params['row'], $params['sql_table_name'], $this->local_variables);
-								} elseif(isset($inject_local_spreadsheet_row_variables)) {
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives['for'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-								} elseif(isset($inject_local_spreadsheet_variables)) {
-									$this->interpreter->inject_local_spreadsheet_variables($directives['for'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives['for'], $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['for'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives['for'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
 								}
 								$for_parts = explode('.', trim($directives['for']), 2);
 								if(count($for_parts)==2) {
@@ -8987,12 +9436,14 @@ class ease_parser {
 									foreach($directives['set'] as $set_command) {
 										if($set_command['bucket']==$directives['as'] || $set_command['bucket']=='') {
 											$this->interpreter->inject_global_variables($set_command['value']);
-											if(isset($inject_local_sql_row_variables)) {
-												$this->interpreter->inject_local_sql_row_variables($set_command['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
-											} elseif(isset($inject_local_spreadsheet_row_variables)) {
-												$this->interpreter->inject_local_spreadsheet_row_variables($set_command['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-											} elseif(isset($inject_local_spreadsheet_variables)) {
-												$this->interpreter->inject_local_spreadsheet_variables($set_command['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+											if(!$no_local_injection) {
+												if(isset($inject_local_sql_row_variables)) {
+													$this->interpreter->inject_local_sql_row_variables($set_command['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
+												} elseif(isset($inject_local_spreadsheet_row_variables)) {
+													$this->interpreter->inject_local_spreadsheet_row_variables($set_command['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+												} elseif(isset($inject_local_spreadsheet_variables)) {
+													$this->interpreter->inject_local_spreadsheet_variables($set_command['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+												}
 											}
 											$context_stack = $this->interpreter->extract_context_stack($set_command['value']);
 											if(preg_match('/^\s*"(.*)"\s*$/s', $set_command['value'], $matches)) {
@@ -9075,12 +9526,14 @@ class ease_parser {
 								break;
 							case 'update_sql_record':
 								$this->interpreter->inject_global_variables($directives['for']);
-								if(isset($inject_local_sql_row_variables)) {
-									$this->interpreter->inject_local_sql_row_variables($directives['for'], $params['row'], $params['sql_table_name'], $this->local_variables);
-								} elseif(isset($inject_local_spreadsheet_row_variables)) {
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives['for'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-								} elseif(isset($inject_local_spreadsheet_variables)) {
-									$this->interpreter->inject_local_spreadsheet_variables($directives['for'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives['for'], $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['for'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives['for'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
 								}
 								$for_parts = explode('.', trim($directives['for']), 2);
 								if(count($for_parts)==2) {
@@ -9100,12 +9553,14 @@ class ease_parser {
 													$this->local_variables['update_sql_columns_already_added'][] = $set_command['key'];
 												}
 												$this->interpreter->inject_global_variables($set_command['value']);
-												if(isset($inject_local_sql_row_variables)) {
-													$this->interpreter->inject_local_sql_row_variables($set_command['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
-												} elseif(isset($inject_local_spreadsheet_row_variables)) {
-													$this->interpreter->inject_local_spreadsheet_row_variables($set_command['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-												} elseif(isset($inject_local_spreadsheet_variables)) {
-													$this->interpreter->inject_local_spreadsheet_variables($set_command['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+												if(!$no_local_injection) {
+													if(isset($inject_local_sql_row_variables)) {
+														$this->interpreter->inject_local_sql_row_variables($set_command['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
+													} elseif(isset($inject_local_spreadsheet_row_variables)) {
+														$this->interpreter->inject_local_spreadsheet_row_variables($set_command['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+													} elseif(isset($inject_local_spreadsheet_variables)) {
+														$this->interpreter->inject_local_spreadsheet_variables($set_command['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+													}
 												}
 												$context_stack = $this->interpreter->extract_context_stack($set_command['value']);
 												if(preg_match('/^\s*"(.*)"\s*$/s', $set_command['value'], $matches)) {
@@ -9165,12 +9620,14 @@ class ease_parser {
 										foreach($directives['set'] as $set_command) {
 											if($set_command['bucket']==$directives['as']) {
 												$this->interpreter->inject_global_variables($set_command['value']);
-												if(isset($inject_local_sql_row_variables)) {
-													$this->interpreter->inject_local_sql_row_variables($set_command['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
-												} elseif(isset($inject_local_spreadsheet_row_variables)) {
-													$this->interpreter->inject_local_spreadsheet_row_variables($set_command['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-												} elseif(isset($inject_local_spreadsheet_variables)) {
-													$this->interpreter->inject_local_spreadsheet_variables($set_command['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+												if(!$no_local_injection) {
+													if(isset($inject_local_sql_row_variables)) {
+														$this->interpreter->inject_local_sql_row_variables($set_command['value'], $params['row'], $params['sql_table_name'], $this->local_variables);
+													} elseif(isset($inject_local_spreadsheet_row_variables)) {
+														$this->interpreter->inject_local_spreadsheet_row_variables($set_command['value'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+													} elseif(isset($inject_local_spreadsheet_variables)) {
+														$this->interpreter->inject_local_spreadsheet_variables($set_command['value'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+													}
 												}
 												$context_stack = $this->interpreter->extract_context_stack($set_command['value']);
 												if(preg_match('/^\s*"(.*)"\s*$/s', $set_command['value'], $matches)) {
@@ -9220,12 +9677,14 @@ class ease_parser {
 								break;
 							case 'delete_sql_record':
 								$this->interpreter->inject_global_variables($directives['for']);
-								if(isset($inject_local_sql_row_variables)) {
-									$this->interpreter->inject_local_sql_row_variables($directives['for'], $params['row'], $params['sql_table_name'], $this->local_variables);
-								} elseif(isset($inject_local_spreadsheet_row_variables)) {
-									$this->interpreter->inject_local_spreadsheet_row_variables($directives['for'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
-								} elseif(isset($inject_local_spreadsheet_variables)) {
-									$this->interpreter->inject_local_spreadsheet_variables($directives['for'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives['for'], $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['for'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives['for'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
 								}
 								$for_parts = explode('.', trim($directives['for']), 2);
 								if(count($for_parts)==2) {
@@ -9372,15 +9831,28 @@ class ease_parser {
 
 	function ease_get_value($name) {
 		$name = trim($name);
+		$name_lower = strtolower($name);
 		$bucket_key_parts = explode('.', $name, 2);
 		if(count($bucket_key_parts)==2) {
 			$bucket = strtolower(rtrim($bucket_key_parts[0]));
 			$key = ltrim($bucket_key_parts[1]);
 			$key_lower = strtolower($key);
 			if($bucket=='session') {
-				return @$_SESSION[$key];
+				if(isset($_SESSION[$key])) {
+					return $_SESSION[$key];
+				} elseif(isset($_SESSION[$key_lower])) {
+					return $_SESSION[$key_lower];
+				} else {
+					return '';
+				}
 			} elseif($bucket=='cookie') {
-				return @$_COOKIE[$key];
+				if(isset($_COOKIE[$key])) {
+					return $_COOKIE[$key];
+				} elseif(isset($_COOKIE[$key_lower])) {
+					return $_COOKIE[$key_lower];
+				} else {
+					return '';
+				}
 			} elseif($bucket=='url') {
 				if(is_array($this->override_url_params)) {
 					return @$this->override_url_params[$key];
@@ -9403,27 +9875,32 @@ class ease_parser {
 			} elseif($bucket=='spreadsheet_name_by_id') {
 				$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($key);
 				return @$spreadsheet_meta_data['name'];
-			} elseif($bucket==$this->local_variables['sql_table_name']) {
+			} elseif(isset($this->local_variables['sql_table_name']) && $bucket==$this->local_variables['sql_table_name']) {
 				if($key_lower=='id') {
 					$key = 'uuid';
 				}
 				return @$this->local_variables['row']["$bucket.$key"];
 			} elseif(isset($this->local_variables[$name])) {
-				return @$this->local_variables[$name];
+				return $this->local_variables[$name];
+			} elseif(isset($this->local_variables[$name_lower])) {
+				return $this->local_variables[$name_lower];
 			} elseif(isset($this->core->globals[$name])) {
-				return @$this->core->globals[$name];
+				return $this->core->globals[$name];
+			} elseif(isset($this->core->globals[$name_lower])) {
+				return $this->core->globals[$name_lower];
 			} elseif($this->core->memcache && (($value = $this->core->memcache->get($name))!==false)) {
+				return($value);
+			} elseif($this->core->memcache && (($value = $this->core->memcache->get($name_lower))!==false)) {
 				return($value);
 			}
 		} else {
 			// the variable name did not contain a '.' character...
 			// treat the entire name as a global key
-			$name_lower = strtolower($name);
-			if(isset($this->global_variables[$name])) {
-				return $this->global_variables[$name];
+			if(isset($this->core->globals[$name])) {
+				return $this->core->globals[$name];
 			}
-			if(isset($this->global_variables[$name_lower])) {
-				return $this->global_variables[$name_lower];
+			if(isset($this->core->globals[$name_lower])) {
+				return $this->core->globals[$name_lower];
 			}
 			if(isset($this->local_variables[$name])) {
 				return $this->local_variables[$name];

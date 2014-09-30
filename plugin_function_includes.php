@@ -56,7 +56,7 @@
                 }
                 $params['suppress_503_headers'] = true;
                 $params['web_basedir'] = "auto";
-                $params['google_oauth2callback_service_endpoint'] = $endpoint_url . check_for_params($endpoint_url) . "endpoint=oauth2callback";
+                $params['google_oauth2callback_service_endpoint'] = "/?page_id=" . $endpoint_page_id . "&endpoint=oauth2callback";
                 $params['form_service_endpoint'] = $endpoint_url . check_for_params($endpoint_url) .  "endpoint=ease_form";
             }
             
@@ -403,5 +403,51 @@
         $_p['post_category'] = array(1); // the default 'Uncatrgorised'
         $the_page_id = wp_insert_post( $_p );
         update_option( 'ease_service_endpoint_page', $the_page_id);
+    }
+    
+     /**
+     *  Adds new pages from the script helper
+     *
+     *  @author Lucas Simmons
+     *
+     *  @since 0.1
+     *
+     */ 
+    function easeAddNewPage() {
+        foreach($_POST['category_template'] as $category_item){
+                if($category_item['page_title']){
+                    $page_title = $category_item['page_title'];
+                }else{
+                    $page_title = $category_item['display_name'];
+                }
+                
+                create_ease_wp_page_from_script_helper($category_item['content'],$page_title,$category_item['template_name'],$_POST['post_status']);
+      } 
+    }
+    
+    function create_ease_wp_page_from_script_helper($content,$title,$espx_file_name,$post_status = "publish"){
+            $espx_file_name = str_replace(".espx","",$espx_file_name);
+	    $_p['post_title'] = $title;
+            $_p['post_content'] = $content;
+            $_p['post_status'] = $post_status;
+            $_p['post_type'] = 'page';
+            $_p['comment_status'] = 'closed';
+            $_p['ping_status'] = 'closed';
+            $_p['post_category'] = array(1); // the default 'Uncatrgorised'
+            $the_page_id = wp_insert_post( $_p );
+            
+            global $temp_url_array;
+            $temp_url_array = get_option("ease_replace_urls");
+            $temp_url_array[$espx_file_name] = $the_page_id;
+            delete_option("ease_replace_urls");
+            add_option( "ease_replace_urls", $temp_url_array);
+                
+            if(strpos($espx_file_name,"espx") !== false){
+                //global $no_show_urls;
+                //$no_show_urls = get_option("ease_no_show_urls");
+                //$no_show_urls[$espx_file_name] = $the_page_id;
+                //delete_option("ease_no_show_urls");
+                //add_option( "ease_no_show_urls", $no_show_urls);
+            }
     }
 ?>

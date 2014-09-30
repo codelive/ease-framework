@@ -3,7 +3,7 @@
      * Plugin Name: EASE Framework
      * Plugin URI: http://www.cloudward.com
      * Description: A plugin that makes it easy to generate forms and lists using EASE syntax and Google Spreadsheets
-     * Version: 0.1.0
+     * Version: 0.1.2
      * Author: Cloudward
      * Author URI: http://www.cloudward.com
      * License: GPLv2 or later
@@ -50,6 +50,7 @@
         add_action('admin_menu', 'ease_plugin_menu');
         add_action( 'admin_init', 'register_ease_setting' );
         add_action( 'admin_init', 'ease_admin_load_js_scripts' );
+        add_action('admin_init', 'ease_plugin_activate_redirect');
         add_filter('admin_footer_text', 'ease_remove_footer_admin');
         
         add_action( 'admin_footer', 'ease_disable_html_editor_wps' );
@@ -62,9 +63,69 @@
         if(get_option('ease_gapp_client_id')){
           add_action( 'add_meta_boxes', 'adding_custom_ease_meta_box_pullfromdrive', 10, 2 );
         }
+        
+        add_action('wp_ajax_ease_add_new_page', 'easeAddNewPage');
+        add_action( 'add_meta_boxes', 'adding_custom_ease_meta_boxes', 10, 2 );
+        add_action( 'save_post', 'ease_save_meta_box_data' );
+        
+        register_activation_hook( __FILE__, 'ease_plugin_activate' );
     }
     
-    //
+    /**
+     * Sets the option to redirect to the plugin page when activated
+     * 
+     * @author  Lucas Simmons 
+     *
+     * @since 0.1.1
+     *
+    */
+    function ease_plugin_activate() {
+        add_option('ease_plugin_do_activation_redirect', true);
+    }
+    
+    /**
+     * Does the actual redirect for ease_plugin_activate
+     * 
+     * @author  Lucas Simmons 
+     *
+     * @since 0.1.1
+     *
+    */
+    function ease_plugin_activate_redirect(){
+        if (get_option('ease_plugin_do_activation_redirect', false)) {
+            delete_option('ease_plugin_do_activation_redirect');
+            wp_redirect(admin_url() . 'admin.php?page=ease_landing_page');
+            exit;
+        }
+    }
+    /**
+     * Excludes no show urls from being displayed
+     * 
+     * @author  Lucas Simmons 
+     *
+     * @since 0.1
+     *
+    */
+    function ease_page_menu_args( $args ) {
+        $exclude_args = get_option("ease_no_show_urls");
+        $arg_string = "";
+        if(is_array($exclude_args)){
+        foreach($exclude_args as $i => $arg){
+            $arg_string .= $arg . ",";
+        }
+        
+        $arg_string = substr($arg_string, 0, -1);
+        }
+        if($arg_string){
+          $arg_string .= ",";
+        }
+         
+        $arg_string .= get_option('ease_service_endpoint_page');
+
+        $args['exclude'] = $arg_string;
+
+        return $args;
+    }
 
     /**
      * Queues javascripts
@@ -75,7 +136,7 @@
      *
     */
     function ease_admin_load_js_scripts(){
-        wp_enqueue_script('ease_my_script', plugins_url( 'script_helper.js' , __FILE__ ));
+        wp_enqueue_script('ease_my_script', plugins_url( 'script_helper.js' , __FILE__ ),array(),"0.1.2.152329");
     }
     
     /**
@@ -109,19 +170,6 @@
         }
     }
     
-    /**
-     * Excludes endpoint url from being displayed in the menu
-     * 
-     * @author  Lucas Simmons 
-     *
-     * @since 0.1
-     *
-    */
-    function ease_page_menu_args( $args ) {
-        $args['exclude'] = get_option('ease_service_endpoint_page');
-        
-        return $args;
-    }
     
     /**
      * Generates the content that shows under a post's edit page
@@ -162,7 +210,22 @@
         <div id="script-helper-div" style="display:none;">
             <i>Note: Once you add an EASE Script, the visual editor in Wordpress for the page will automatically be disabled</i><BR><BR><link rel="stylesheet" href="//code.jquery.com/ui/1.11.0/themes/smoothness/jquery-ui.css">
                   <script src="//code.jquery.com/jquery-1.10.2.js"></script>
-                  <script src="//code.jquery.com/ui/1.11.0/jquery-ui.js"></script><script type="text/javascript">
+                  <script src="//code.jquery.com/ui/1.11.0/jquery-ui.js"></script>
+  <script type="text/javascript">
+ // var script_category = {};
+   //
+      function createCategoryScripts(category,post_status){
+               var r = confirm("This will create Wordpress Pages for every script listed.  Do you want to continue?");
+                if (r == true) {
+                  jQuery("#create_category_status").html("<B>Your new pages are being created...</B><BR><BR>");
+                  data = { action : "ease_add_new_page" , category_template: script_category[category],post_status:post_status};
+                  jQuery.post(ajaxurl, data, function(response) {
+                      jQuery("#content-tmce").remove();
+                      tb_remove();
+                      window.alert("Pages created successfully!  Go to the pages section of the admin to edit them");
+                     });
+                }
+       }
           jQuery(function() {
           //  jQuery( "#accordion" ).accordion();
           });
@@ -205,11 +268,12 @@
                       jQuery("#modal_script_helper_textarea").val(script_object[script_name]);
                     }
             }</script>
+
         <style>
               /* Use the following CSS code if you want to have a class per icon */
               li { cursor: pointer; }
           </style>
-          <div class="siteformsection" style=""> <a href="#TB_inline?width=600&height=550&inlineId=script-helper-div" title="EASE Script Helper" id="script-helper-modal-link" class="thickbox"></a><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(1);">Surveys</a></div><div class="content-1-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;survey_helper&quot;);">Survey</a><BR></div><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(4);">Files</a></div><div class="content-4-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;file_upload_helper&quot;);">Form to upload a file</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;file_list_helper&quot;);">List Files Uploaded to Drive</a><BR></div><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(5);">List Scripts</a></div><div class="content-5-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;sheet_list_helper&quot;);">SImple List from Sheet</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;db_list_helper&quot;);">Simple List from DB</a><BR></div><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(6);">Form Scripts</a></div><div class="content-6-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;form_helper&quot;);">Simple Form to Sheet</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;dbform_helper&quot;);">Simple form to database</a><BR></div>
+          <div class="siteformsection" style=""><span id="create_category_status"></span> <a href="#TB_inline?width=600&height=550&inlineId=script-helper-div" title="EASE Script Helper" id="script-helper-modal-link" class="thickbox"></a> <a href="#TB_inline?width=600&height=550&inlineId=create_helper_category" title="EASE Script Helper" id="create-helper-modal-link" class="thickbox"></a><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(1);">Surveys</a> <span style="float:right">Create all pages in this collection as <a onclick=createCategoryScripts(1,"draft")>draft</a> or <a onclick=createCategoryScripts(1,"publish")>published</a></span> </div><div class="content-1-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;customer_experience&quot;);">Customer Experience Survey</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;NPS_Survey&quot;);">Net Promoter Score Survey</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;customer_experience_report&quot;);">Customer Experience Survey Report</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;NPS_Survey_Report&quot;);">Net Promoter Survey Report</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;survey_helper&quot;);">Survey</a><BR></div><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(2);">Contacts</a> <span style="float:right">Create all pages in this collection as <a onclick=createCategoryScripts(2,"draft")>draft</a> or <a onclick=createCategoryScripts(2,"publish")>published</a></span> </div><div class="content-2-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;contacts_edit&quot;);">Edit Contacts</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;contacts_list&quot;);">List Contacts</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;contacts_campaign&quot;);">Email Campaign to Contacts</a><BR></div><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(3);">Easy Store</a> <span style="float:right">Create all pages in this collection as <a onclick=createCategoryScripts(3,"draft")>draft</a> or <a onclick=createCategoryScripts(3,"publish")>published</a></span> </div><div class="content-3-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;easy_store_readme&quot;);">ReadMe</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;easy_store_add_item&quot;);">Add Store Item</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;easy_store_store&quot;);">Store</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;easy_store_place_order&quot;);">Place Order</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;easy_store_confirm_order&quot;);">Confirm Order</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;easy_store_order_payment&quot;);">Order Payment</a><BR></div><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(4);">Files</a> <span style="float:right">Create all pages in this collection as <a onclick=createCategoryScripts(4,"draft")>draft</a> or <a onclick=createCategoryScripts(4,"publish")>published</a></span> </div><div class="content-4-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;file_upload_helper&quot;);">Form to upload a file</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;file_list_helper&quot;);">List Files Uploaded to Drive</a><BR></div><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(10);">Sheet Examples</a> <span style="float:right">Create all pages in this collection as <a onclick=createCategoryScripts(10,"draft")>draft</a> or <a onclick=createCategoryScripts(10,"publish")>published</a></span> </div><div class="content-10-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;payments_form.espx&quot;);">Payments Form</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;payments_list.espx&quot;);">Payments List</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;unset_rush.espx&quot;);">Unset Rush</a><BR></div><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(11);">MySQL Examples</a> <span style="float:right">Create all pages in this collection as <a onclick=createCategoryScripts(11,"draft")>draft</a> or <a onclick=createCategoryScripts(11,"publish")>published</a></span> </div><div class="content-11-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;timecard_form.espx&quot;);">Timecard Form</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;timecard_list.espx&quot;);">Timecard List</a><BR></div><div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);background-color:#f5f5f5;margin:10px;padding-left:10px;margin-bottom:0px;"><a style="color:#000000;font-size:16px;cursor:pointer;"  onclick="toogleScriptHelper(9);">Membership Site</a> <span style="float:right">Create all pages in this collection as <a onclick=createCategoryScripts(9,"draft")>draft</a> or <a onclick=createCategoryScripts(9,"publish")>published</a></span> </div><div class="content-9-one" style="cursor: pointer;padding:10px 15px;border-width:1px;border-style:solid;border-color: rgb(221, 221, 221);display:none;margin-left:10px;margin-top:0px;padding-left:10px;margin-right:10px;border-top:0px;"><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;ReadMe&quot;);">ReadMe</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;admin_member_list&quot;);">Admin Member List</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;admin_member_edit&quot;);">Admin Member Edit</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;admin_file_upload_list&quot;);">Admin File Upload List</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;admin_file_upload_edit&quot;);">Admin File Upload Edit</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;admin_logon&quot;);">Admin Logon</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;validate_admin&quot;);">Validate Admin</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;members&quot;);">Members</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;member_logon&quot;);">Member Logon</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;password_recovery&quot;);">Password Recovery</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;member_signup&quot;);">Member Signup</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;member_profile&quot;);">Member Profile</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;member_docs&quot;);">Member Docs</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;member_logoff&quot;);">Member Logoff</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;member_signup_confirm&quot;);">Member Signup Confirm</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;member_validate&quot;);">Member Validate</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;password_recovery_send&quot;);">Password Recovery Send</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;password_recovery_verify&quot;);">Password Recovery Verify</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;validate_members&quot;);">Validate Members</a><BR><a style="cursor: pointer;" onclick="loadScriptHelperText(&quot;member_file_download&quot;);">Member File Download</a><BR></div>
     <div class="expand-one" style="border-top-left-radius: 5px;border-top-right-radius: 5px;padding:10px 15px;;margin:10px;padding-left:10px;margin-bottom:0px;">
     Script Preview:<br><textarea id="modal_script_helper_textarea" style="width:100%" name="modal_script_helper_textarea" class="form-control" rows="25"></textarea>
     </div>
@@ -217,7 +281,10 @@
             <a class="button button-primary button-large" onclick="insertHelper();">Insert</a>
             <a class="button button-default button-large" onclick="closeHelperScriptModal();">Nevermind</a>
             </span>    
-        </div>';     
+        </div>        <div id="create_helper_category" style="display:none;">
+        <p>Currently creating your helper scripts, please wait...</p>
+       </div>
+';     
     }
     
     /**
@@ -242,6 +309,38 @@
             $content = str_replace("&lt;#","<#",$content);
             $content = str_replace("#&gt;","#>",$content);
             
+            $content = preg_replace_callback(
+                                 '/<#\s*include\s*("|\')(.*?)("|\')\s*[\.;]{0,1}\s*#>/is',
+                                 function($matches) use ($content){
+                                 
+                                 $temp_url_array = get_option("ease_replace_urls");
+                                 $espx_page = str_replace(".espx","",$matches[2]);
+                                 $post_id = $temp_url_array[$espx_page];
+                                 $post_object = get_post($post_id);
+                                 return $post_object->post_content;
+                                 },
+                                 $content
+                                 );
+            
+            // If there is an email includes in here, parse them out and run them
+           $content = preg_replace_callback(
+                                 '/bodypage\s*=\s*"(.*?)"\s*;/is',
+                                 function($matches) use ($content){
+                                    $url = parse_url($matches[0]);
+
+                                    //$url = str_replace("bodypage = \"","",$url['path']);
+                                    $url = preg_replace('/(bodypage\s*=\s*")/',"", $url['path']); 
+                                    $replace_urls1 = get_option( "ease_replace_urls");
+
+                                    $post = get_post($replace_urls1[$url]);
+                                    $ease_core1 = ease_load_core();
+                                    return "body=\"" .replace_ease_urls($ease_core1->process_ease($post->post_content,true)) . "\";";
+                                 },
+                                 $content
+                                 );
+            
+            //if(!preg_match('/(.*?)(<#\s*([^\s\[\'"].*|$))/i', $body_line)) {
+            $content = replace_ease_urls($content);
             $this_content = $ease_core->process_ease($content,true);
             echo $this_content;
         }else{
@@ -250,6 +349,46 @@
         if($_POST['ease_form_id']){   
             ob_flush();
         }
+    }
+    
+    /**
+     * Replaces EASE urls with the WordPress permalinks
+     *
+     * @author  Lucas Simmons 
+     *
+     * @since 0.1.1
+     *
+     * @param string    $content  The content you want to scan for ease links (/?page=page_name or ?page=page_name)
+    */
+    function replace_ease_urls($content){
+        //$content = preg_replace('/bodypage\s*=\s*"(.*?)"\s*;/is', "$1" . get_permalink($link_id), $content); 
+        $replace_urls = get_option( "ease_replace_urls");
+        
+        
+        // Replaces the urls with the wordpress permalink url
+        if($replace_urls){
+            foreach($replace_urls as $index => $link_id){
+                    // Replaces any urls that end in (space/line break)#> for things like restrict access... probably should make this search through ease tags 
+                    $content = preg_replace('/(\/\?page=((' . $index . ')))(?=\s*#>)/', get_permalink($link_id), $content);
+                    
+                    // Replace any urls that have a start of a quote and end of a quote or ? or & and are formatted like /?page=page_name with the permalink url
+                    $content = preg_replace('/(\'|")+(\/\?page=((' . $index . ')))(?=\?|&|"|\')/', "$1" . get_permalink($link_id), $content);
+                 
+                    // Searches for any permalinks that have the syntax /& when they should be /?
+                    if(get_permalink($link_id) !== false){
+                        $content = preg_replace('/(' . preg_quote(get_permalink($link_id),'/') . '&)+/', get_permalink($link_id) . '?', $content);
+                    }
+            }
+            
+            //foreach($replace_urls as $index => $link_id){
+            //    $content = preg_replace('/(\?page=((' . $index . ')))(?=\?|&|"|\')/', get_permalink($link_id), $content);
+            //    $content = preg_replace('/(' . preg_quote(get_permalink($link_id),'/') . '(&))+/', get_permalink($link_id) . '?', $content);  
+            //}
+        }
+        
+        // Any extra /?page= should be replaced with the site url as the base
+        $content = preg_replace('/((?:\'|")+\/\?page=)+/', site_url() . '?page=', $content);  
+        return $content;
     }
     
     
@@ -288,9 +427,15 @@
         ?>
         <script type="text/javascript">
             function loadProjectSetup() {
-                var project_id = jQuery("#ease_project_id").val();
+                var project_id = jQuery("#ease_project_id").val().trim();
+                
+                if (project_id.indexOf(" ") > 0) {
+                    alert("Your project name cannot have spaces");
+                    return false;
+                }
                 jQuery("#drive_api_setup").attr("href", "https://cloud.google.com/console/project/apps~" + project_id + "/apiui/api?show=all");
                 jQuery("#client_id_setup").attr("href", "https://cloud.google.com/console/project/apps~" + project_id + "/apiui/credential");
+                jQuery(".consent_screen_setup").attr("href","https://console.developers.google.com/project/apps~" + project_id + "/apiui/consent");
                 jQuery("#project_setup").show();
             }
 
@@ -401,7 +546,7 @@
             </div>
             <div class="sitesection">
                 <?php
-                $endpoint_url = get_permalink( $endpoint_page_id );
+                $endpoint_url = site_url() . "/?page_id=" . $endpoint_page_id . "&endpoint=oauth2callback";
                 
                 $endpoint_url_ssl = str_replace("http://","https://",$endpoint_url);
             
@@ -422,7 +567,7 @@
                                                         <blockquote><li>Login to your Google account</li>
                                                         <li>Go to <a target="_blank" href="http://cloud.google.com/console">http://cloud.google.com/console</a> - if the "New Project" window doesn't show, then click New Project</li>
                                                         <li>Enter a project name and ID for your project. The project is required by Google for access to Google. </li>
-                                                        <li>Enter the name of your project below
+                                                        <li>Enter your Project ID below
                                                         <p><input type="text" id="ease_project_id" name="ease_project_id" value="<?php echo get_option('ease_project_id'); ?>" /></p></li>
                                                         </blockquote>
                                                         <p>Click <a onclick="loadProjectSetup();">Next >></a></p>
@@ -432,14 +577,17 @@
                                                             <B><BR>Step 3 of 3 - Create your Client ID<BR><i>The Client ID is used to authenticate your Wordpress site to Google Drive</i><BR><BR></B>
                                                             <blockquote><li><a id="client_id_setup" target="_blank">Click here</a> and select the option CREATE CLIENT ID</li>
                                                             <p>Fill out the form as follows<BR><BR>
-                                                            Application type: Web Application <BR><BR>In the FIRST, Authorized Javascript Origins� box, put these values in:<BR><BR>
+                                                            Application type: Web Application <BR><BR>In the FIRST, Authorized Javascript Origins box, put these values in:<BR><BR>
                                                             <textarea id="javascript_origins" rows=5 cols=60><?php echo "http://" . $_SERVER['HTTP_HOST']; ?>&#13;&#10;<?php echo "https://" . $_SERVER['HTTP_HOST']; ?></textarea>
                                                             </p>
                                                             <p>In the SECOND box, Authorized Redirect URI, put these values in:<BR><BR>
-                                                            <textarea id="redirect_uris" rows=5 cols=60><?php echo $endpoint_url . check_for_params($endpoint_url) . "endpoint=oauth2callback"; ?>&#13;&#10;<?php echo $endpoint_url_ssl . check_for_params($endpoint_url_ssl) . "endpoint=oauth2callback"; ?></textarea>
+                                                            <textarea id="redirect_uris" rows=5 cols=60><?php echo $endpoint_url; ?>&#13;&#10;<?php echo $endpoint_url_ssl; ?></textarea>
                                                             </p>
                                                             </li>
                                                             <li>Now, click the CREATE CLIENT ID button and enter the CLIENT ID and CLIENT SECRET from the "CLIENT ID for web application section" below<BR><BR></li>
+                                                            <li>Set the <a class="consent_screen_setup" target="_blank">consent screen</a> name and email<BR><BR>
+ 
+                                                            For your app to authorize access to Google Drive, your <a class="consent_screen_setup" target="_blank">consent screen</a> needs to have a Product Name and Email address.  The <a class="consent_screen_setup" target="_blank">consent screen</a> will be shown to users whenever your application requests access to their private data using your client ID.
                                                             </blockquote>
                                                         </div>
                                                         </ol>
@@ -720,6 +868,7 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
      *  
      */   
     function ease_landing_page(){
+        ease_load_core();
         echo "<script type='text/javascript'>
         function closeModal(){
             tb_show('', '#TB_inline?height=300&width=300&inlineId=confirmDiv&modal=false');
@@ -735,14 +884,10 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
         <div class='wrap'><h3>Welcome to Cloudward EASE and WordPress</h3></div>";
         add_thickbox();
         echo '<span>
-        <a onclick="loadWelcomeWindow();" title="Welcome" id="welcome-modal-link" name="welcome-modal-link" class="thickbox">Welcome</a>
+        <a onclick="loadWelcomeWindow();" title="" id="welcome-modal-link" name="welcome-modal-link" class="thickbox">EASE Framework Welcome Page</a>
         </span>
         <div id="welcome-modal-div" style="display:none;">
-        <p>    
-				    
-				    
-				    
-				<!DOCTYPE html>
+        <p><!DOCTYPE html>
 <html lang="en">
 <head>
 	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
@@ -755,49 +900,39 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
 	
 	<!-- fonts -->
 	<link href="http://fonts.googleapis.com/css?family=Lato:400,700,900,400italic" rel="stylesheet" type="text/css">
-    <meta name="description" content="Welcome to Cloudward with EASE. Build your business with the skills you have and the tools you know">
+    <meta name="description" content="Welcome to Cloudward EASE Framework">
 </head>
 <body>
-	<!-- 
-	=>	NOTE: 
-		Remove class on body tag class="temporary-cloudward-wp-popUp-bg"
-		when applying content into iFrame, this class is temporary and is used as simulation for wordpress background.
-
-	=>	IMPORTANT:
-		All styles are pulled from file style.css that is linked into head of this document.
-		Font family is pulled from fonts.googleapis.com
-	-->
+	
 	<div class="cloudward-wp-popUp">
 		<div id="plugin-information-content">
 			<div class="cloudward-wp-popUp-content clearfix">
 				<div class="cloudward-wp-popUp-heading">
-					<h1>Welcome to <strong class="blue-light">Cloudward</strong> with <strong class="blue-light">EASE</strong></h1>
-					<h2>Build your business with the skills you have and the tools you know</h2>
+					<h2>Welcome to the <strong class="blue-light">Cloudward EASE Framework</strong></h2>
 				</div>
 				<!-- description -->
 				<div class="cloudward-wp-popUp-description">
 					<div class="text-formating">
 						<ul>
-							<li>Create and edit your WordPress site from Google Docs</li>
-							<li>Save customer contact forms to a Google Sheet</li>
-							<li>Deliver protected member content from Google Cloud</li>
-							<li>eCommerce Store setup is as easy as setting up a spreadsheet</li>
-							<li>Customize with Cloudward’s EASE framework</li>
+							<li>To get started, view the <a href="https://www.youtube.com/watch?v=FhJv-GYYJPM" target="_blank">Getting Started with EASE </a>video </li>
+							<li>Visit our <a href="http://www.momsbakeryonline.com" target="_blank">live demo</a></li>
+							<li>For more videos, visit youtube @ <a href="http://www.youtube.com/cloudwardease" target="_blank">youtube.com/cloudwardease</a> </li>
+				            <li>Visit our support page <a href="http://support.cloudward.com" target="_blank">support.cloudward.com</a> </li>
+						    <li>Check out our <a href="http://support.cloudward.com/hc/en-us/articles/202589228-EASE-Reference-Guide" target="_blank">EASE Reference guide </a> </li>
+							<li><a href="http://support.cloudward.com/hc/en-us/articles/203257397-How-EASE-Works" target="_blank">Introduction to EASE</a>, <a href="http://support.cloudward.com/hc/en-us/articles/202174353-Introduction-to-EASE-Lists" target="_blank">Lists</a> and <a href="http://support.cloudward.com/hc/en-us/articles/202576608-Introduction-to-EASE-Forms">Forms</a> blogs</li>
 						</ul>
-						<p class="text-big">Get Support: <strong><a href="http://www.cloudward.com/support" target="_blank">http://www.cloudward.com/support</a></strong></p>
 					</div>
 				</div>
 				<!-- video -->
 				<div>
-						
-						<center><iframe id="startplayer" style="visibility: visible; display: block;" frameborder="0" allowfullscreen="1" title="YouTube video player" width="264" height="180" src="https://www.youtube.com/embed/UNHevzZf7dM?autoplay=0&enablejsapi=1&amp;controls=2&amp;rel=0&amp;modestbranding=1&amp;showinfo=0&amp;hd=1&amp;autohide=1&amp;enablejsapi=1&amp;origin=http%3A%2F%2Fwww.cloudward.com"></iframe></center>
+				   <center><iframe id="startplayer" style="visibility: visible; display: block;" frameborder="0" allowfullscreen="1" title="YouTube video player" width="264" height="180" src="https://www.youtube.com/embed/FhJv-GYYJPM?autoplay=0&enablejsapi=1&amp;controls=2&amp;rel=0&amp;modestbranding=1&amp;showinfo=0&amp;hd=1&amp;autohide=1&amp;enablejsapi=1&amp;origin=http%3A%2F%2Fwww.cloudward.com"></iframe></center>
 				</div>
 			</div>
 		</div>
 	</div>
 	
-	<script src=”//code.jquery.com/jquery-1.7.2.js”></script>
-	<script type=”text/javascript” src=”http://www.cloudward.com/js/lunametrics-youtube-v6.js ”></script>
+	<script src="//code.jquery.com/jquery-1.7.2.js"></script>
+	<script type="text/javascript"" src="http://www.cloudward.com/js/lunametrics-youtube-v6.js"></script>
 	
 	<span id="welcome_do_not_show" >
                 <a class="button button-primary button-large" href="admin.php?page=ease_landing_page&ease_do_not_show_welcome=y">Do not show this again</a>
@@ -808,9 +943,6 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
 	
 </body>
 </html>			    
-			  			    
-			  			    
-			  			    
 			  </p>
        </div>';
        
@@ -883,6 +1015,119 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
         add_submenu_page(null,'Create EASE Endpoint page','Create EASE Endpoint page','manage_options','create_ease_endpoint_page','create_ease_endpoint_page');
     }
     
+    /**
+     * Adds box at the bottom of the page for editing posts
+     * 
+     * @author  Lucas Simmons 
+     *
+     * @since 0.3
+     *
+     * @param string    $post_type  
+     * @param string    $post  
+    */
+    function adding_custom_ease_meta_boxes( $post_type, $post ) {
+        add_meta_box( 
+            'my-meta-box',
+            __( 'EASE Page name' ),
+            'render_ease_meta_box',
+            'page',
+            'side',
+            'high'
+        );
+    }
+    
+    function render_ease_meta_box($post){
+       $page_name = array_search($post->ID,get_option('ease_replace_urls'));
+       
+       if(!$page_name && $post->ID){
+        $post = get_post($post->ID);
+       // $page_name = $post->post_name;
+       }
+       
+       if($page_name && strpos($page_name,".espx") === false){
+        $page_name .= ".espx";
+       }
+       wp_nonce_field( 'ease_meta_box', 'ease_meta_box_nonce' );
+       echo '<input type="text" id="ease_file_page_name" name="ease_file_page_name" value="' . esc_attr( $page_name ) . '" size="25" /><BR>';
+       
+       if($page_name){
+        echo 'Reference as: /?page=' . str_replace(".espx","",$page_name);
+       }
+    }
 
+    /**
+     * When the post is saved, saves our custom data.
+     *
+     * @param int $post_id The ID of the post being saved.
+     */
+    /**
+     * When the post is saved, saves our custom data.
+     *
+     * @param int $post_id The ID of the post being saved.
+     */
+    function ease_save_meta_box_data( $post_id ) {
+
+            /*
+             * We need to verify this came from our screen and with proper authorization,
+             * because the save_post action can be triggered at other times.
+             */
+    
+            // Check if our nonce is set.
+            if ( ! isset( $_POST['ease_meta_box_nonce'] ) ) {
+                    return;
+            }
+    
+            // Verify that the nonce is valid.
+            if ( ! wp_verify_nonce( $_POST['ease_meta_box_nonce'], 'ease_meta_box' ) ) {
+                    return;
+            }
+    
+            // If this is an autosave, our form has not been submitted, so we don't want to do anything.
+            if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
+                    return;
+            }
+    
+            // Check the user's permissions.
+            if ( isset( $_POST['post_type'] ) && 'page' == $_POST['post_type'] ) {
+    
+                    if ( ! current_user_can( 'edit_page', $post_id ) ) {
+                            return;
+                    }
+    
+            } else {
+    
+                    if ( ! current_user_can( 'edit_post', $post_id ) ) {
+                            return;
+                    }
+            }
+    
+            /* OK, it's safe for us to save the data now. */
+            
+            // Make sure that it is set.
+            if ( ! isset( $_POST['ease_file_page_name'] ) ) {
+                    return;
+            }
+    
+            // Sanitize user input.
+            $my_data = str_replace(".espx","",sanitize_text_field( $_POST['ease_file_page_name'] ));
+    
+            // Update the meta field in the database.
+            
+            $replace_urls = get_option( "ease_replace_urls");
+            $page_name = array_search($post_id,get_option('ease_replace_urls'));
+            
+            if($page_name && $post_id){
+                unset($replace_urls[$page_name]);
+                unset($replace_urls[$page_name . ".espx"]);
+            }
+            
+            if($post_id){
+                $replace_urls[$my_data] = $post_id;
+                delete_option("ease_replace_urls");
+                add_option( "ease_replace_urls", $replace_urls);                
+            }
+            //update_post_meta( $post_id, '_my_meta_value_key', $my_data );
+    }
+    
     include_once plugin_dir_path( __FILE__ ) . 'plugin_function_includes.php';
 ?>

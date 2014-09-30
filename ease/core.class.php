@@ -41,10 +41,15 @@ class ease_core {
 	public $google_spreadsheets = array();
 	public $google_spreadsheets_by_name = array();
 	public $reserved_buckets = array('system', 'session', 'cookie', 'url', 'uri', 'cache', 'config', 'request');
-	public $reserved_sql_tables = array('ease_config', 'ease_google_spreadsheets');
+	public $reserved_sql_tables = array('ease_config', 'ease_google_spreadsheets', 'ease_forms');
 	public $reserved_sql_columns = array('instance_id', 'id', 'uuid', 'created_on', 'updated_on');
 	public $request_espx_path;
 	public $request_espx_path_dir;
+	public $namespace = '';
+	public $db_disabled = false;
+	public $php_disabled = false;
+	public $include_disabled = false;
+	public $include_from_sql = null;
 
 	function __construct($params=array()) {
 		// default to UTF-8 encoding when processing and generating text
@@ -121,7 +126,7 @@ class ease_core {
 		if(isset($this->config['web_basedir']) && strtolower($this->config['web_basedir'])=='auto'
 		  && isset($_SERVER['DOCUMENT_ROOT']) && $this->application_root!=$_SERVER['DOCUMENT_ROOT']
 		  && preg_match('@^' . preg_quote($_SERVER['DOCUMENT_ROOT'], '@') . '(.*)$@i', $this->application_root, $matches)) {
-			// configuration was set to "auto" and the EASE application root is in a subdirectory of the web server document root
+			// configuration was set to "auto" and the EASE application root is in a subdirectory of the web server document root.
 			// set the web_basedir to the difference of the web server document root and the EASE application root
 			$this->web_basedir = str_replace(DIRECTORY_SEPARATOR, '/', $matches[1]);
 		} elseif(isset($this->config['web_basedir'])) {
@@ -842,7 +847,7 @@ class ease_core {
 
 	}
 
-	function validate_google_access_token() {
+	function validate_google_access_token($send_full_state=false) {
 		// load connection parameters for the Google Apps API
 		$this->load_system_config_var('gapp_client_id');
 		$this->load_system_config_var('gapp_client_secret');
@@ -859,12 +864,16 @@ class ease_core {
 			$client->setClientSecret($this->config['gapp_client_secret']);
 			$client->setRedirectUri((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']=='on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . $this->service_endpoints['google_oauth2callback']);
 			$client->setScopes('https://spreadsheets.google.com/feeds https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly');
-			// determine the requested filepath
-			$request_path_parts = explode('?', $_SERVER['REQUEST_URI'], 2);
-			$request_path = $request_path_parts[0];
-			//$client->setState((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']=='on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . $request_path);
-			// URL encode the state variable as google doesn't encode it when adding it to the URL they redirect back to
-			$client->setState(urlencode($request_path));
+			if($send_full_state) {
+				$client->setState(urlencode($_SERVER['REQUEST_URI']));
+			} else {
+				// determine the requested filepath
+				$request_path_parts = explode('?', $_SERVER['REQUEST_URI'], 2);
+				$request_path = $request_path_parts[0];
+				//$client->setState((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']=='on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . $request_path);
+				// URL encode the state variable as google doesn't encode it when adding it to the URL they redirect back to
+				$client->setState(urlencode($request_path));
+			}
 			$client->setAccessType('offline');
 			$client->setApprovalPrompt('force');
 			if(isset($this->config['elasticache_config_endpoint']) && trim($this->config['elasticache_config_endpoint'])!='') {
@@ -1059,6 +1068,7 @@ class ease_core {
 		$this->globals['system.name'] = &$this->globals['system.domain'];
 		$this->globals['system.host'] = $_SERVER['HTTP_HOST'];
 		$this->globals['system.http_host'] = 'http' . ((isset($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS'])=='on') ? 's' : '') . '://' . $_SERVER['HTTP_HOST'];
+		$this->globals['system.https_host'] = 'http' . (($_SERVER['SERVER_NAME']!='localhost') ? 's' : '') . '://' . $_SERVER['HTTP_HOST'];
 		$this->globals['system.host_url'] = &$this->globals['system.http_host'];
 		$this->globals['system.core'] = 'PHP';
 		$this->globals['system.timestamp'] = $_SERVER['REQUEST_TIME'];

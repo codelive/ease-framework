@@ -34,15 +34,15 @@ class ease_form_handler {
 		require_once('interpreter.class.php');
 
 		// validate the requested form ID
+		// TODO! if the user session has expired, form posts will fail... perhaps store the form info in the DB as well
 		if(!isset($_SESSION['ease_forms'][$_REQUEST['ease_form_id']])) {
 			echo 'Invalid EASE Form ID: ' . htmlspecialchars($_REQUEST['ease_form_id']);
 			exit;
 		}
 		// load the form info from the session
 		$this->form_info = $_SESSION['ease_forms'][$_REQUEST['ease_form_id']];
-		// TODO! if the user session has expired, form posts will fail... perhaps store the form info in the DB as well
 
-		// confirm any post restrictions were met
+		// confirm that all post restrictions were met  (CAPTCHA, form password, etc...)
 		if(isset($this->form_info['restrict_post']) && is_array($this->form_info['restrict_post'])) {
 			foreach($this->form_info['restrict_post'] as $input_key=>$required_value) {
 				$input_key_parts = explode('.', $input_key, 2);
@@ -74,7 +74,7 @@ class ease_form_handler {
 						}
 					}
 				} else {
-					// this is non-SQL form... inputs are stored slightly differently as they also include the uncleansed field names
+					// this is a non-SQL form... inputs are stored slightly differently as they also include the uncleansed field names
 					// this allows spreadsheet forms to set the column header to "Original Name" while still referencing the column as "original_name"
 					$key = preg_replace('/^[0-9]+/', '', str_replace('_', '', $key));
 					if(isset($this->form_info['inputs']) && is_array($this->form_info['inputs'])) {
@@ -272,7 +272,7 @@ class ease_form_handler {
 	}
 
 	function add_instance_to_sql_table($action) {
-		// build an array $new_row containing the row values to insert into the SQL Table
+		// build an array $new_row containing the record values to insert into the SQL Table
 		if(isset($this->form_info['inputs']) && is_array($this->form_info['inputs'])) {
 			foreach($this->form_info['inputs'] as $post_key=>$bucket_key) {
 				$bucket_key_parts = explode('.', $bucket_key, 2);
@@ -524,11 +524,15 @@ class ease_form_handler {
 				}
 			}
 		}
+		if(!isset($new_row['uuid'])) {
+			$new_row['uuid'] = $this->core->new_uuid();
+		}
 		@$this->form_info['set_to_list_by_action'][$action] = array_merge(
 			(array)$this->form_info['set_to_list_by_action'][$action],
 			(array)$this->form_info['set_to_list_by_action']['done']
 		);
 		foreach($this->form_info['set_to_list_by_action'][$action] as $bucket_key=>$value) {
+			$this->inject_form_variables($value, $new_row['uuid'], $new_row);
 			$bucket_key_parts = explode('.', $bucket_key, 2);
 			if(count($bucket_key_parts)==2) {
 				$bucket = preg_replace('/[^a-z0-9]+/s', '_', strtolower(rtrim($bucket_key_parts[0])));
@@ -553,7 +557,7 @@ class ease_form_handler {
 		);
 		foreach($this->form_info['calculate_list_by_action'][$action] as $bucket_key=>$expression) {
 			$context_stack = ease_interpreter::extract_context_stack($expression);
-			$this->inject_form_variables($expression, $this->form_info['instance_uuid'], $new_row);
+			$this->inject_form_variables($expression, $new_row['uuid'], $new_row);
 			if(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $expression, $math_expression_matches)) {
 				// math expression value, evaluate the expression to calculate value
 				$eval_result = @eval("\$set_value = $expression;");
@@ -879,7 +883,16 @@ class ease_form_handler {
 	}
 
 	function update_instance_in_sql_table($action) {
-		// build the updated row for the referenced SQL Table instance
+		// query for existing data for the record being updated
+		$query = $this->core->db->prepare("SELECT * FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
+		$params = array(':uuid'=>(string)$this->form_info['instance_uuid']);
+		if($query->execute($params)) {
+			$existing_record = $query->fetch(PDO::FETCH_ASSOC);
+		} else {
+			// this is an update form for a record that doesn't exist... error out?
+			$existing_record = array();
+		}
+		// build the updated row for the SQL Table instance
 		if(isset($this->form_info['inputs']) && is_array($this->form_info['inputs'])) {
 			foreach($this->form_info['inputs'] as $post_key=>$bucket_key) {
 				$bucket_key_parts = explode('.', $bucket_key, 2);
@@ -1124,11 +1137,57 @@ class ease_form_handler {
 				}
 			}
 		}
+		// process any conditional form actions
+		@$this->form_info['conditional_actions'][$action] = array_merge(
+			(array)$this->form_info['conditional_actions'][$action],
+			(array)$this->form_info['conditional_actions']['done']
+		);
+		foreach($this->form_info['conditional_actions'][$action] as $conditional_action) {
+			$remaining_condition = $conditional_action['condition'];
+			$php_condition_string = '';
+			while(preg_match('/^(&&|\|\||and|or|xor){0,1}\s*(!|not){0,1}([(\s]*)"(.*?)"\s*(==|!=|>|>=|<|<=|<>|===|!==|=|is)\s*"(.*?)"([)\s]*)/is', $remaining_condition, $matches)) {
+				if(strtolower($matches[1])=='and') {
+					$matches[1] = '&&';
+				}
+				if(strtolower($matches[1])=='or') {
+					$matches[1] = '||';
+				}
+				if(strtolower($matches[2])=='not') {
+					$matches[2] = '!';
+				}
+				if($matches[5]=='=' || strtolower($matches[5])=='is') {
+					$matches[5] = '==';
+				}
+				$this->inject_form_variables($matches[4], $this->form_info['instance_uuid'], $updated_row, $existing_record);
+				$this->inject_form_variables($matches[6], $this->form_info['instance_uuid'], $updated_row, $existing_record);
+				$php_condition_string .= $matches[1]
+					. $matches[2]
+					. $matches[3]
+					. var_export($matches[4], true)
+					. $matches[5]
+					. var_export($matches[6], true)
+					. $matches[7];
+				$remaining_condition = substr($remaining_condition, strlen($matches[0]));
+			}
+			if(@eval('if(' . $php_condition_string . ') return true; else return false;')) {
+				switch($conditional_action['type']) {
+					case 'set_to_string':
+						$this->form_info['set_to_list_by_action'][$action][$conditional_action['variable']] = $conditional_action['value'];
+						break;
+					case 'create_sql_record':
+						$this->form_info['create_sql_record_list_by_action'][$action][] = $conditional_action['record'];
+						break;
+					default:
+				}
+			}
+		}
+		// process any form action set commands
 		@$this->form_info['set_to_list_by_action'][$action] = array_merge(
 			(array)$this->form_info['set_to_list_by_action'][$action],
 			(array)$this->form_info['set_to_list_by_action']['done']
 		);
 		foreach($this->form_info['set_to_list_by_action'][$action] as $bucket_key=>$value) {
+			$this->inject_form_variables($value, $this->form_info['instance_uuid'], $updated_row, $existing_record);
 			$bucket_key_parts = explode('.', $bucket_key, 2);
 			if(count($bucket_key_parts)==2) {
 				$bucket = preg_replace('/[^a-z0-9]+/s', '_', strtolower(rtrim($bucket_key_parts[0])));
@@ -1153,7 +1212,7 @@ class ease_form_handler {
 		);
 		foreach($this->form_info['calculate_list_by_action'][$action] as $bucket_key=>$expression) {
 			$context_stack = ease_interpreter::extract_context_stack($expression);
-			$this->inject_form_variables($expression, $this->form_info['instance_uuid'], $updated_row);
+			$this->inject_form_variables($expression, $this->form_info['instance_uuid'], $updated_row, $existing_record);
 			if(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $expression, $math_expression_matches)) {
 				// math expression value, evaluate the expression to calculate value
 				$eval_result = @eval("\$set_value = $expression;");
@@ -1185,6 +1244,7 @@ class ease_form_handler {
 				$updated_row[$key] = $set_value;
 			}
 		}
+				
 		// if updated row data exists, update the instance in the SQL Table, otherwise do nothing
 		if(isset($updated_row)) {
 			// make sure the SQL Table exists and has all the columns referenced in the new row
@@ -1225,6 +1285,7 @@ class ease_form_handler {
 			}
 			// update the record in the database
 			$update_columns_sql = '';
+			$params = array();
 			foreach($updated_row as $key=>$value) {
 				$update_columns_sql .= ",`$key`=:$key";
 				$params[":$key"] = (string)$value;
@@ -1243,7 +1304,7 @@ class ease_form_handler {
 			if(count($bucket_key_parts)==2) {
 				$bucket = rtrim($bucket_key_parts[0]);
 				$key = ltrim($bucket_key_parts[1]);
-				$this->inject_form_variables($value, $params[':uuid'], $updated_row);
+				$this->inject_form_variables($value, $params[':uuid'], $updated_row, $existing_record);
 				switch(strtolower($bucket)) {
 					case 'session':
 						$_SESSION[$key] = $value;
@@ -1263,7 +1324,7 @@ class ease_form_handler {
 		);
 		foreach($this->form_info['send_email_list_by_action'][$action] as $mail_options) {
 			foreach(array_keys($mail_options) as $mail_option_key) {
-				$this->inject_form_variables($mail_options[$mail_option_key], $params[':uuid'], $updated_row);
+				$this->inject_form_variables($mail_options[$mail_option_key], $params[':uuid'], $updated_row, $existing_record);
 			}
 			$result = $this->core->send_email($mail_options);
 		}
@@ -1273,13 +1334,13 @@ class ease_form_handler {
 			(array)$this->form_info['create_sql_record_list_by_action']['done']
 		);
 		foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
-			$this->inject_form_variables($create_sql_record['for'], $params[':uuid'], $updated_row);
+			$this->inject_form_variables($create_sql_record['for'], $params[':uuid'], $updated_row, $existing_record);
 			$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
 			$create_sql_record_new_row = array();
 			if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
 				foreach($create_sql_record['set_to_commands'] as $set_to_command) {
 					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $updated_row);
+						$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $updated_row, $existing_record);
 						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
 						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
 							// set to quoted string
@@ -1360,6 +1421,7 @@ class ease_form_handler {
 												SET uuid=:uuid
 													$insert_columns_sql;	");
 			$query->execute($create_sql_record_params);
+			// TODO!  check for query errors like updating a column that wasn't set to hold over 64k of data with more than 64k of data...
 		}
 		// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
 		@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
@@ -1367,7 +1429,7 @@ class ease_form_handler {
 			(array)$this->form_info['update_sql_record_list_by_action']['done']
 		);
 		foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
-			$this->inject_form_variables($update_sql_record['for'], $params[':uuid'], $updated_row);
+			$this->inject_form_variables($update_sql_record['for'], $params[':uuid'], $updated_row, $existing_record);
 			$for_parts = explode('.', $update_sql_record['for'], 2);
 			if(count($for_parts)==2) {
 				$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
@@ -1379,7 +1441,7 @@ class ease_form_handler {
 			if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
 				foreach($update_sql_record['set_to_commands'] as $set_to_command) {
 					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $updated_row);
+						$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $updated_row, $existing_record);
 						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
 						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
 							// set to quoted string
@@ -1444,26 +1506,25 @@ class ease_form_handler {
 			(array)$this->form_info['delete_sql_record_list_by_action']['done']
 		);
 		foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
-			$this->inject_form_variables($delete_sql_record['for'], $params[':uuid'], $updated_row);
+			$this->inject_form_variables($delete_sql_record['for'], $params[':uuid'], $updated_row, $existing_record);
 			$for_parts = explode('.', $delete_sql_record['for'], 2);
 			if(count($for_parts)==2) {
 				$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
 				$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
 			} else {
-				// delete record with no referenced record to delete.... hmm...
+				// delete record with no referenced record to delete... skip it
 				continue;
 			}
 			// build the query to delete the row
 			$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
 			$result = $query->execute($delete_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 		}
 		// execute any redirect commands from form actions
 		if(isset($this->form_info['redirect_to_by_action'][$action])) {
-			$this->inject_form_variables($this->form_info['redirect_to_by_action'][$action], $params[':uuid'], $updated_row);
+			$this->inject_form_variables($this->form_info['redirect_to_by_action'][$action], $params[':uuid'], $updated_row, $existing_record);
 			header('Location: ' . $this->form_info['redirect_to_by_action'][$action]);
 		} elseif(isset($this->form_info['redirect_to_by_action']['done'])) {
-			$this->inject_form_variables($this->form_info['redirect_to_by_action']['done'], $params[':uuid'], $updated_row);
+			$this->inject_form_variables($this->form_info['redirect_to_by_action']['done'], $params[':uuid'], $updated_row, $existing_record);
 			header('Location: ' . $this->form_info['redirect_to_by_action']['done']);
 		} else {
 			// a landing page was not set... default to the homepage
@@ -1472,6 +1533,15 @@ class ease_form_handler {
 	}
 
 	function delete_instance_from_sql_table($action) {
+		// query for existing data for the record being updated
+		$query = $this->core->db->prepare("SELECT * FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
+		$params = array(':uuid'=>(string)$this->form_info['instance_uuid']);
+		if($query->execute($params)) {
+			$existing_record = $query->fetch(PDO::FETCH_ASSOC);
+		} else {
+			// this is an update form for a record that doesn't exist... error out?
+			$existing_record = array();
+		}
 		// delete the requested instance
 		$query = $this->core->db->prepare("DELETE FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
 		$params = array(':uuid'=>$this->form_info['instance_uuid']);
@@ -1486,7 +1556,7 @@ class ease_form_handler {
 			if(count($bucket_key_parts)==2) {
 				$bucket = rtrim($bucket_key_parts[0]);
 				$key = ltrim($bucket_key_parts[1]);
-				$this->inject_form_variables($value, $params[':uuid']);
+				$this->inject_form_variables($value, $params[':uuid'], null, $existing_record);
 				switch(strtolower($bucket)) {
 					case 'session':
 						$_SESSION[$key] = $value;
@@ -1495,6 +1565,7 @@ class ease_form_handler {
 						setcookie($key, $value, time() + 60 * 60 * 24 * 365, '/');
 						$_COOKIE[$key] = $value;
 						break;
+					default:
 				}
 			}
 		}
@@ -1515,13 +1586,13 @@ class ease_form_handler {
 			(array)$this->form_info['create_sql_record_list_by_action']['done']
 		);
 		foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
-			$this->inject_form_variables($create_sql_record['for'], $params[':uuid']);
+			$this->inject_form_variables($create_sql_record['for'], $params[':uuid'], null, $existing_record);
 			$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
 			$create_sql_record_new_row = array();
 			if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
 				foreach($create_sql_record['set_to_commands'] as $set_to_command) {
 					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid']);
+						$this->inject_form_variables($set_to_command['value'], $params[':uuid'], null, $existing_record);
 						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
 						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
 							// set to quoted string
@@ -1971,7 +2042,7 @@ class ease_form_handler {
 		foreach($this->form_info['set_to_list_by_action'][$action] as $set_to_command) {
 			$value = $set_to_command['value'];
 			$this->inject_form_variables($value, $row['easerowid'], $row);
-			switch($set_to_command['bucket']) {
+			switch(strtolower($set_to_command['bucket'])) {
 				case 'session':
 					$_SESSION[$set_to_command['key']] = $value;
 					break;
@@ -2465,7 +2536,7 @@ class ease_form_handler {
 		foreach($this->form_info['set_to_list_by_action'][$action] as $set_to_command) {
 			$value = $set_to_command['value'];
 			$this->inject_form_variables($value, $this->form_info['row_uuid'], $row);
-			switch($set_to_command['bucket']) {
+			switch(strtolower($set_to_command['bucket'])) {
 				case 'session':
 					$_SESSION[$set_to_command['key']] = $value;
 					break;
@@ -3028,32 +3099,69 @@ class ease_form_handler {
 		}
 	}
 
-	function inject_form_variables(&$string, $id, $form=array()) {
+	function inject_form_variables(&$string, $id, $form=array(), $existing=array()) {
 		// this function will return true if any injections were made, otherwise false
 		$injected = false;
 		$string = preg_replace_callback(
-			'/' . preg_quote($this->core->ease_block_start, '/') . '\s*form\s*.\s*(.*?)\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
-			function($matches) use (&$injected, $id, $form) {
+			'/' . preg_quote($this->core->ease_block_start, '/') . '\s*(.*?)\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
+			function($matches) use (&$injected, $id, $form, $existing) {
 				// process the variable name to determine the type and context
 				$injected = true;
-				$context_stack = ease_interpreter::extract_context_stack($matches[1]);
-				if(strtolower($matches[1])=='id' || strtolower($matches[1])=='uuid' || strtolower($matches[1])=='easerowid') {
-					$value = $id;
+				$bucket_key_parts = explode('.', $matches[1], 2);
+				if(count($bucket_key_parts)==2) {
+					$bucket = preg_replace('/[^a-z0-9]+/', '_', strtolower(rtrim($bucket_key_parts[0])));
+					$key = ltrim($bucket_key_parts[1]);
 				} else {
+					// this is an injection for an existing record value
+					$bucket = '';
+					$key = preg_replace('/[^a-z0-9]+/', '_', strtolower($matches[1]));
+				}
+				$context_stack = ease_interpreter::extract_context_stack($key);
+				if($bucket=='form') {
+					if(strtolower($key)=='id' || strtolower($key)=='uuid' || strtolower($key)=='easerowid') {
+						$value = $id;
+					} else {
+						// Cloud SQL, Google Drive Spreadsheets, and memcached have different allowed character sets for bucket.key names...
+						// allow any of the formats to determine the value to inject
+						if(isset($form[$key])) {
+							$value = $form[$key];
+						} elseif(isset($form[strtoupper($key)])) {
+							$value = $form[strtoupper($key)];
+						} elseif(isset($form[strtolower($key)])) {
+							$value = $form[strtolower($key)];
+						} elseif(isset($form[preg_replace('/(^[0-9]+|[^a-z0-9]+)/is', '', strtolower($key))])) {
+							$value = $form[preg_replace('/(^[0-9]+|[^a-z0-9]+)/is', '', strtolower($key))];
+						} elseif(isset($form[preg_replace('/[^a-z0-9]+/is', '_', strtolower($key))])) {
+							$value = $form[preg_replace('/[^a-z0-9]+/is', '_', strtolower($key))];
+						} else {
+							$value = '';
+						}
+					}
+				} elseif($bucket=='' || $bucket==$this->form_info['sql_table_name'] || $bucket=='row') {
 					// Cloud SQL, Google Drive Spreadsheets, and memcached have different allowed character sets for bucket.key names...
 					// allow any of the formats to determine the value to inject
-					if(isset($form[$matches[1]])) {
-						$value = $form[$matches[1]];
-					} elseif(isset($form[strtoupper($matches[1])])) {
-						$value = $form[strtoupper($matches[1])];
-					} elseif(isset($form[strtolower($matches[1])])) {
-						$value = $form[strtolower($matches[1])];
-					} elseif(isset($form[preg_replace('/(^[0-9]+|[^a-z0-9]+)/is', '', strtolower($matches[1]))])) {
-						$value = $form[preg_replace('/(^[0-9]+|[^a-z0-9]+)/is', '', strtolower($matches[1]))];
-					} elseif(isset($form[preg_replace('/[^a-z0-9]+/is', '_', strtolower($matches[1]))])) {
-						$value = $form[preg_replace('/[^a-z0-9]+/is', '_', strtolower($matches[1]))];
+					if(isset($existing[$key])) {
+						$value = $existing[$key];
+					} elseif(isset($existing[strtoupper($key)])) {
+						$value = $existing[strtoupper($key)];
+					} elseif(isset($existing[strtolower($key)])) {
+						$value = $existing[strtolower($key)];
+					} elseif(isset($existing[preg_replace('/(^[0-9]+|[^a-z0-9]+)/is', '', strtolower($key))])) {
+						$value = $existing[preg_replace('/(^[0-9]+|[^a-z0-9]+)/is', '', strtolower($key))];
+					} elseif(isset($existing[preg_replace('/[^a-z0-9]+/is', '_', strtolower($key))])) {
+						$value = $existing[preg_replace('/[^a-z0-9]+/is', '_', strtolower($key))];
 					} else {
 						$value = '';
+					}
+				}
+				// process the context stack for items that use variable references such as salt variables for hashing
+				if(is_array($context_stack) && count($context_stack) > 0) {
+					foreach($context_stack as $key=>$item) {
+						if(isset($item['context']) && $item['context']=='hash' && isset($item['salt_var']) && trim($item['salt_var'])!='') {
+							$hash_salt_var = $this->core->ease_block_start . $item['salt_var'] . $this->core->ease_block_end;
+							$this->inject_form_variables($hash_salt_var, $id, $form, $existing);							
+							$context_stack[$key]['salt'] = $hash_salt_var;
+						}
 					}
 				}
 				ease_interpreter::apply_context_stack($value, $context_stack);
