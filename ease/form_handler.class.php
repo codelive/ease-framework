@@ -30,11 +30,12 @@ class ease_form_handler {
 	}
 
 	function process() {
-		// require an interpreter for extracting and applying contexts in variable references in form actions
+		// require an interpreter for extracting and applying contexts from variable references in form actions
 		require_once('interpreter.class.php');
 
-		// validate the requested form ID
-		// TODO! if the user session has expired, form posts will fail... perhaps store the form info in the DB as well
+		// validate the requested EASE Form ID
+		// TODO! if the user session has expired, form posts will fail... perhaps store the form info in the DB as well, 
+		// -- but that eliminates the added layer of security of restricting the post to the current session
 		if(!isset($_SESSION['ease_forms'][$_REQUEST['ease_form_id']])) {
 			echo 'Invalid EASE Form ID: ' . htmlspecialchars($_REQUEST['ease_form_id']);
 			exit;
@@ -302,7 +303,8 @@ class ease_form_handler {
 				}
 			}
 		}
-		if(isset($this->form_info['files']) && is_array($this->form_info['files'])) {
+		// only process file uploads for SQL backed forms if a database connection exists and hasn't been disabled
+		if(isset($this->form_info['files']) && is_array($this->form_info['files']) && $this->core->db && !$this->core->db_disabled) {
 			// there were file upload fields in the form, check for uploaded files
 			foreach($this->form_info['files'] as $post_key=>$file_attributes) {
 				$bucket_key_parts = explode('.', $file_attributes['map'], 2);
@@ -590,7 +592,7 @@ class ease_form_handler {
 			}
 		}
 		// if new row data exists, insert a new row into the SQL Table, otherwise do nothing
-		if(isset($new_row)) {
+		if(isset($new_row) && $this->core->db && !$this->core->db_disabled) {
 			// make sure the SQL Table exists and has all the columns referenced in the new row
 			$result = $this->core->db->query("DESCRIBE `{$this->form_info['sql_table_name']}`;");
 			if($result) {
@@ -678,196 +680,199 @@ class ease_form_handler {
 			}
 			$result = $this->core->send_email($mail_options);
 		}
-		// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['create_sql_record_list_by_action'][$action],
-			(array)$this->form_info['create_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
-			$this->inject_form_variables($create_sql_record['for'], $params[':uuid'], $new_row);
-			$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
-			$create_sql_record_new_row = array();
-			if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
-				foreach($create_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $new_row);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+		// only process SQL backed form actions if a database connection exists and hasn't been disabled
+		if($this->core->db && !$this->core->db_disabled) {
+			// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['create_sql_record_list_by_action'][$action],
+				(array)$this->form_info['create_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
+				$this->inject_form_variables($create_sql_record['for'], $params[':uuid'], $new_row);
+				$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
+				$create_sql_record_new_row = array();
+				if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
+					foreach($create_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $new_row);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$create_sql_record_new_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
-				foreach($create_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$create_sql_record_new_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
-			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
-						}
-					}
-				}
-			} else {
-				// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
-				$custom_columns_sql = '';
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $this->core->reserved_sql_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
-						} else {
-							$custom_columns_sql .= ", `$column` text NOT NULL default ''";
-						}
-					}
-				}
-				$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
-								instance_id int NOT NULL PRIMARY KEY auto_increment,
-								created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
-								updated_on timestamp NOT NULL,
-								uuid varchar(32) NOT NULL UNIQUE
-								$custom_columns_sql
-							);	";
-				$this->core->db->exec($sql);
-			}
-			// insert the new row
-			$create_sql_record_params = array();
-			if(isset($create_sql_record_new_row['uuid'])) {
-				$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
-				unset($create_sql_record_new_row['uuid']);
-			} else {
-				$create_sql_record_params[':uuid'] = $this->core->new_uuid();
-			}
-			$insert_columns_sql = '';
-			foreach($create_sql_record_new_row as $key=>$value) {
-				$insert_columns_sql .= ",`$key`=:$key";
-				$create_sql_record_params[":$key"] = (string)$value;
-			}
-			$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
-												SET uuid=:uuid
-													$insert_columns_sql;	");
-			$query->execute($create_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
-		}
-		// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['update_sql_record_list_by_action'][$action],
-			(array)$this->form_info['update_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
-			$this->inject_form_variables($update_sql_record['for'], $params[':uuid'], $new_row);
-			$for_parts = explode('.', $update_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
-			} else {
-				// update record with no referenced record to update.... hmm...
-				continue;
-			}
-			if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
-				foreach($update_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $new_row);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+				if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
+					foreach($create_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$update_sql_record_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
-				foreach($update_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
 						}
 					}
 				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				} else {
+					// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
+					$custom_columns_sql = '';
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $this->core->reserved_sql_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
+							} else {
+								$custom_columns_sql .= ", `$column` text NOT NULL default ''";
+							}
+						}
+					}
+					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+									instance_id int NOT NULL PRIMARY KEY auto_increment,
+									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+									updated_on timestamp NOT NULL,
+									uuid varchar(32) NOT NULL UNIQUE
+									$custom_columns_sql
+								);	";
+					$this->core->db->exec($sql);
+				}
+				// insert the new row
+				$create_sql_record_params = array();
+				if(isset($create_sql_record_new_row['uuid'])) {
+					$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
+					unset($create_sql_record_new_row['uuid']);
+				} else {
+					$create_sql_record_params[':uuid'] = $this->core->new_uuid();
+				}
+				$insert_columns_sql = '';
+				foreach($create_sql_record_new_row as $key=>$value) {
+					$insert_columns_sql .= ",`$key`=:$key";
+					$create_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+													SET uuid=:uuid
+														$insert_columns_sql;	");
+				$query->execute($create_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($update_sql_record_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($update_sql_record_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+			// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['update_sql_record_list_by_action'][$action],
+				(array)$this->form_info['update_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
+				$this->inject_form_variables($update_sql_record['for'], $params[':uuid'], $new_row);
+				$for_parts = explode('.', $update_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
+				} else {
+					// update record with no referenced record to update.... hmm...
+					continue;
+				}
+				if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
+					foreach($update_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $new_row);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
+							}
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$update_sql_record_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
+				if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
+					foreach($update_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
+							}
+						}
+					}
+				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($update_sql_record_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($update_sql_record_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				}
+				// build the query to update the row
+				$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
+				unset($update_sql_record_row['uuid']);
+				$update_columns_sql = '';
+				foreach($update_sql_record_row as $key=>$value) {
+					$update_columns_sql .= ",`$key`=:$key";
+					$update_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+													SET updated_on=NOW()
+														$update_columns_sql
+													WHERE uuid=:uuid;	");
+				$result = $query->execute($update_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			// build the query to update the row
-			$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
-			unset($update_sql_record_row['uuid']);
-			$update_columns_sql = '';
-			foreach($update_sql_record_row as $key=>$value) {
-				$update_columns_sql .= ",`$key`=:$key";
-				$update_sql_record_params[":$key"] = (string)$value;
+			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['delete_sql_record_list_by_action'][$action],
+				(array)$this->form_info['delete_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
+				$this->inject_form_variables($delete_sql_record['for'], $params[':uuid'], $new_row);
+				$for_parts = explode('.', $delete_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
+				} else {
+					// delete record with no referenced record to delete.... hmm...
+					continue;
+				}
+				// build the query to delete the row
+				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$result = $query->execute($delete_sql_record_params);
 			}
-			$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
-												SET updated_on=NOW()
-													$update_columns_sql
-												WHERE uuid=:uuid;	");
-			$result = $query->execute($update_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
-		}
-		// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['delete_sql_record_list_by_action'][$action],
-			(array)$this->form_info['delete_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
-			$this->inject_form_variables($delete_sql_record['for'], $params[':uuid'], $new_row);
-			$for_parts = explode('.', $delete_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
-			} else {
-				// delete record with no referenced record to delete.... hmm...
-				continue;
-			}
-			// build the query to delete the row
-			$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
-			$result = $query->execute($delete_sql_record_params);
 		}
 		// execute any redirect commands from form actions
 		if(isset($this->form_info['redirect_to_by_action'][$action])) {
@@ -883,13 +888,19 @@ class ease_form_handler {
 	}
 
 	function update_instance_in_sql_table($action) {
-		// query for existing data for the record being updated
-		$query = $this->core->db->prepare("SELECT * FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
-		$params = array(':uuid'=>(string)$this->form_info['instance_uuid']);
-		if($query->execute($params)) {
-			$existing_record = $query->fetch(PDO::FETCH_ASSOC);
+		// check if a database connection exists and hasn't been disabled
+		if($this->core->db && !$this->core->db_disabled) {
+			// query for existing data for the record being updated
+			$query = $this->core->db->prepare("SELECT * FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
+			$params = array(':uuid'=>(string)$this->form_info['instance_uuid']);
+			if($query->execute($params)) {
+				$existing_record = $query->fetch(PDO::FETCH_ASSOC);
+			} else {
+				// this is an update form for a record that doesn't exist
+				$existing_record = array();
+			}
 		} else {
-			// this is an update form for a record that doesn't exist... error out?
+			// database connection is not available or has been disabled
 			$existing_record = array();
 		}
 		// build the updated row for the SQL Table instance
@@ -922,7 +933,7 @@ class ease_form_handler {
 				}
 			}
 		}
-		if(isset($this->form_info['files']) && is_array($this->form_info['files'])) {
+		if(isset($this->form_info['files']) && is_array($this->form_info['files']) && $this->core->db && !$this->core->db_disabled) {
 			foreach($this->form_info['files'] as $post_key=>$file_attributes) {
 				$bucket_key_parts = explode('.', $file_attributes['map'], 2);
 				if(count($bucket_key_parts)==2) {
@@ -1244,9 +1255,8 @@ class ease_form_handler {
 				$updated_row[$key] = $set_value;
 			}
 		}
-				
 		// if updated row data exists, update the instance in the SQL Table, otherwise do nothing
-		if(isset($updated_row)) {
+		if(isset($updated_row) && $this->core->db && !$this->core->db_disabled) {
 			// make sure the SQL Table exists and has all the columns referenced in the new row
 			$result = $this->core->db->query("DESCRIBE `{$this->form_info['sql_table_name']}`;");
 			if($result) {
@@ -1328,196 +1338,199 @@ class ease_form_handler {
 			}
 			$result = $this->core->send_email($mail_options);
 		}
-		// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['create_sql_record_list_by_action'][$action],
-			(array)$this->form_info['create_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
-			$this->inject_form_variables($create_sql_record['for'], $params[':uuid'], $updated_row, $existing_record);
-			$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
-			$create_sql_record_new_row = array();
-			if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
-				foreach($create_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $updated_row, $existing_record);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+		// only process SQL backed form actions if a database connection exists and hasn't been disabled
+		if($this->core->db && !$this->core->db_disabled) {
+			// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['create_sql_record_list_by_action'][$action],
+				(array)$this->form_info['create_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
+				$this->inject_form_variables($create_sql_record['for'], $params[':uuid'], $updated_row, $existing_record);
+				$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
+				$create_sql_record_new_row = array();
+				if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
+					foreach($create_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $updated_row, $existing_record);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$create_sql_record_new_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
-				foreach($create_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$create_sql_record_new_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
-			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
-						}
-					}
-				}
-			} else {
-				// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
-				$custom_columns_sql = '';
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $this->core->reserved_sql_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
-						} else {
-							$custom_columns_sql .= ", `$column` text NOT NULL default ''";
-						}
-					}
-				}
-				$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
-								instance_id int NOT NULL PRIMARY KEY auto_increment,
-								created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
-								updated_on timestamp NOT NULL,
-								uuid varchar(32) NOT NULL UNIQUE
-								$custom_columns_sql
-							);	";
-				$this->core->db->exec($sql);
-			}
-			// insert the new row
-			$create_sql_record_params = array();
-			if(isset($create_sql_record_new_row['uuid'])) {
-				$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
-				unset($create_sql_record_new_row['uuid']);
-			} else {
-				$create_sql_record_params[':uuid'] = $this->core->new_uuid();
-			}
-			$insert_columns_sql = '';
-			foreach($create_sql_record_new_row as $key=>$value) {
-				$insert_columns_sql .= ",`$key`=:$key";
-				$create_sql_record_params[":$key"] = (string)$value;
-			}
-			$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
-												SET uuid=:uuid
-													$insert_columns_sql;	");
-			$query->execute($create_sql_record_params);
-			// TODO!  check for query errors like updating a column that wasn't set to hold over 64k of data with more than 64k of data...
-		}
-		// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['update_sql_record_list_by_action'][$action],
-			(array)$this->form_info['update_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
-			$this->inject_form_variables($update_sql_record['for'], $params[':uuid'], $updated_row, $existing_record);
-			$for_parts = explode('.', $update_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
-			} else {
-				// update record with no referenced record to update.... hmm...
-				continue;
-			}
-			if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
-				foreach($update_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $updated_row, $existing_record);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+				if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
+					foreach($create_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$update_sql_record_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
-				foreach($update_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
 						}
 					}
 				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				} else {
+					// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
+					$custom_columns_sql = '';
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $this->core->reserved_sql_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
+							} else {
+								$custom_columns_sql .= ", `$column` text NOT NULL default ''";
+							}
+						}
+					}
+					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+									instance_id int NOT NULL PRIMARY KEY auto_increment,
+									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+									updated_on timestamp NOT NULL,
+									uuid varchar(32) NOT NULL UNIQUE
+									$custom_columns_sql
+								);	";
+					$this->core->db->exec($sql);
+				}
+				// insert the new row
+				$create_sql_record_params = array();
+				if(isset($create_sql_record_new_row['uuid'])) {
+					$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
+					unset($create_sql_record_new_row['uuid']);
+				} else {
+					$create_sql_record_params[':uuid'] = $this->core->new_uuid();
+				}
+				$insert_columns_sql = '';
+				foreach($create_sql_record_new_row as $key=>$value) {
+					$insert_columns_sql .= ",`$key`=:$key";
+					$create_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+													SET uuid=:uuid
+														$insert_columns_sql;	");
+				$query->execute($create_sql_record_params);
+				// TODO!  check for query errors like updating a column that wasn't set to hold over 64k of data with more than 64k of data...
 			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($update_sql_record_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($update_sql_record_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+			// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['update_sql_record_list_by_action'][$action],
+				(array)$this->form_info['update_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
+				$this->inject_form_variables($update_sql_record['for'], $params[':uuid'], $updated_row, $existing_record);
+				$for_parts = explode('.', $update_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
+				} else {
+					// update record with no referenced record to update.... hmm...
+					continue;
+				}
+				if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
+					foreach($update_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $params[':uuid'], $updated_row, $existing_record);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
+							}
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$update_sql_record_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
+				if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
+					foreach($update_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
+							}
+						}
+					}
+				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($update_sql_record_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($update_sql_record_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				}
+				// build the query to update the row
+				$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
+				unset($update_sql_record_row['uuid']);
+				$update_columns_sql = '';
+				foreach($update_sql_record_row as $key=>$value) {
+					$update_columns_sql .= ",`$key`=:$key";
+					$update_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+													SET updated_on=NOW()
+														$update_columns_sql
+													WHERE uuid=:uuid;	");
+				$result = $query->execute($update_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			// build the query to update the row
-			$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
-			unset($update_sql_record_row['uuid']);
-			$update_columns_sql = '';
-			foreach($update_sql_record_row as $key=>$value) {
-				$update_columns_sql .= ",`$key`=:$key";
-				$update_sql_record_params[":$key"] = (string)$value;
+			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['delete_sql_record_list_by_action'][$action],
+				(array)$this->form_info['delete_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
+				$this->inject_form_variables($delete_sql_record['for'], $params[':uuid'], $updated_row, $existing_record);
+				$for_parts = explode('.', $delete_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
+				} else {
+					// delete record with no referenced record to delete... skip it
+					continue;
+				}
+				// build the query to delete the row
+				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$result = $query->execute($delete_sql_record_params);
 			}
-			$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
-												SET updated_on=NOW()
-													$update_columns_sql
-												WHERE uuid=:uuid;	");
-			$result = $query->execute($update_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
-		}
-		// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['delete_sql_record_list_by_action'][$action],
-			(array)$this->form_info['delete_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
-			$this->inject_form_variables($delete_sql_record['for'], $params[':uuid'], $updated_row, $existing_record);
-			$for_parts = explode('.', $delete_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
-			} else {
-				// delete record with no referenced record to delete... skip it
-				continue;
-			}
-			// build the query to delete the row
-			$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
-			$result = $query->execute($delete_sql_record_params);
 		}
 		// execute any redirect commands from form actions
 		if(isset($this->form_info['redirect_to_by_action'][$action])) {
@@ -1533,24 +1546,27 @@ class ease_form_handler {
 	}
 
 	function delete_instance_from_sql_table($action) {
-		// query for existing data for the record being updated
-		$query = $this->core->db->prepare("SELECT * FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
-		$params = array(':uuid'=>(string)$this->form_info['instance_uuid']);
-		if($query->execute($params)) {
-			$existing_record = $query->fetch(PDO::FETCH_ASSOC);
-		} else {
-			// this is an update form for a record that doesn't exist... error out?
-			$existing_record = array();
+		// only process SQL deletes if a database connection exists and hasn't been disabled
+		if($this->core->db && !$this->core->db_disabled) {
+			// query for existing data for the record being updated
+			$query = $this->core->db->prepare("SELECT * FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
+			$params = array(':uuid'=>(string)$this->form_info['instance_uuid']);
+			if($query->execute($params)) {
+				$existing_record = $query->fetch(PDO::FETCH_ASSOC);
+			} else {
+				// this is an update form for a record that doesn't exist... error out?
+				$existing_record = array();
+			}
+			// delete the requested instance
+			$query = $this->core->db->prepare("DELETE FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
+			$params = array(':uuid'=>$this->form_info['instance_uuid']);
+			$result = $query->execute($params);
+			// execute any set cookie or session variable commands for the form action
+			@$this->form_info['set_to_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['set_to_list_by_action'][$action],
+				(array)$this->form_info['set_to_list_by_action']['done']
+			);
 		}
-		// delete the requested instance
-		$query = $this->core->db->prepare("DELETE FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
-		$params = array(':uuid'=>$this->form_info['instance_uuid']);
-		$result = $query->execute($params);
-		// execute any set cookie or session variable commands for the form action
-		@$this->form_info['set_to_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['set_to_list_by_action'][$action],
-			(array)$this->form_info['set_to_list_by_action']['done']
-		);
 		foreach($this->form_info['set_to_list_by_action'][$action] as $bucket_key=>$value) {
 			$bucket_key_parts = explode('.', $bucket_key, 2);
 			if(count($bucket_key_parts)==2) {
@@ -1580,196 +1596,199 @@ class ease_form_handler {
 			}
 			$result = $this->core->send_email($mail_options);
 		}
-		// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['create_sql_record_list_by_action'][$action],
-			(array)$this->form_info['create_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
-			$this->inject_form_variables($create_sql_record['for'], $params[':uuid'], null, $existing_record);
-			$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
-			$create_sql_record_new_row = array();
-			if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
-				foreach($create_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid'], null, $existing_record);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+		// only process SQL backed form actions if a database connection exists and hasn't been disabled
+		if($this->core->db && !$this->core->db_disabled) {
+			// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['create_sql_record_list_by_action'][$action],
+				(array)$this->form_info['create_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
+				$this->inject_form_variables($create_sql_record['for'], $params[':uuid'], null, $existing_record);
+				$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
+				$create_sql_record_new_row = array();
+				if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
+					foreach($create_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $params[':uuid'], null, $existing_record);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$create_sql_record_new_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
-				foreach($create_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$create_sql_record_new_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
-			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
-						}
-					}
-				}
-			} else {
-				// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
-				$custom_columns_sql = '';
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $this->core->reserved_sql_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
-						} else {
-							$custom_columns_sql .= ", `$column` text NOT NULL default ''";
-						}
-					}
-				}
-				$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
-								instance_id int NOT NULL PRIMARY KEY auto_increment,
-								created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
-								updated_on timestamp NOT NULL,
-								uuid varchar(32) NOT NULL UNIQUE
-								$custom_columns_sql
-							);	";
-				$this->core->db->exec($sql);
-			}
-			// insert the new row
-			$create_sql_record_params = array();
-			if(isset($create_sql_record_new_row['uuid'])) {
-				$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
-				unset($create_sql_record_new_row['uuid']);
-			} else {
-				$create_sql_record_params[':uuid'] = $this->core->new_uuid();
-			}
-			$insert_columns_sql = '';
-			foreach($create_sql_record_new_row as $key=>$value) {
-				$insert_columns_sql .= ",`$key`=:$key";
-				$create_sql_record_params[":$key"] = (string)$value;
-			}
-			$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
-												SET uuid=:uuid
-													$insert_columns_sql;	");
-			$query->execute($create_sql_record_params);
-		}
-		// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['update_sql_record_list_by_action'][$action],
-			(array)$this->form_info['update_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
-			$this->inject_form_variables($update_sql_record['for'], $params[':uuid']);
-			$for_parts = explode('.', $update_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
-			} else {
-				// update record with no referenced record to update.... hmm...
-				continue;
-			}
-			if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
-				foreach($update_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid']);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+				if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
+					foreach($create_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$update_sql_record_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
-				foreach($update_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
 						}
 					}
 				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				} else {
+					// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
+					$custom_columns_sql = '';
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $this->core->reserved_sql_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
+							} else {
+								$custom_columns_sql .= ", `$column` text NOT NULL default ''";
+							}
+						}
+					}
+					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+									instance_id int NOT NULL PRIMARY KEY auto_increment,
+									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+									updated_on timestamp NOT NULL,
+									uuid varchar(32) NOT NULL UNIQUE
+									$custom_columns_sql
+								);	";
+					$this->core->db->exec($sql);
+				}
+				// insert the new row
+				$create_sql_record_params = array();
+				if(isset($create_sql_record_new_row['uuid'])) {
+					$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
+					unset($create_sql_record_new_row['uuid']);
+				} else {
+					$create_sql_record_params[':uuid'] = $this->core->new_uuid();
+				}
+				$insert_columns_sql = '';
+				foreach($create_sql_record_new_row as $key=>$value) {
+					$insert_columns_sql .= ",`$key`=:$key";
+					$create_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+													SET uuid=:uuid
+														$insert_columns_sql;	");
+				$query->execute($create_sql_record_params);
 			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($update_sql_record_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($update_sql_record_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+			// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['update_sql_record_list_by_action'][$action],
+				(array)$this->form_info['update_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
+				$this->inject_form_variables($update_sql_record['for'], $params[':uuid']);
+				$for_parts = explode('.', $update_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
+				} else {
+					// update record with no referenced record to update.... hmm...
+					continue;
+				}
+				if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
+					foreach($update_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $params[':uuid']);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
+							}
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$update_sql_record_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
+				if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
+					foreach($update_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
+							}
+						}
+					}
+				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($update_sql_record_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($update_sql_record_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				}
+				// build the query to update the row
+				$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
+				unset($update_sql_record_row['uuid']);
+				$update_columns_sql = '';
+				foreach($update_sql_record_row as $key=>$value) {
+					$update_columns_sql .= ",`$key`=:$key";
+					$update_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+													SET updated_on=NOW()
+														$update_columns_sql
+													WHERE uuid=:uuid;	");
+				$result = $query->execute($update_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			// build the query to update the row
-			$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
-			unset($update_sql_record_row['uuid']);
-			$update_columns_sql = '';
-			foreach($update_sql_record_row as $key=>$value) {
-				$update_columns_sql .= ",`$key`=:$key";
-				$update_sql_record_params[":$key"] = (string)$value;
+			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['delete_sql_record_list_by_action'][$action],
+				(array)$this->form_info['delete_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
+				$this->inject_form_variables($delete_sql_record['for'], $params[':uuid']);
+				$for_parts = explode('.', $delete_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
+				} else {
+					// delete record with no referenced record to delete.... hmm...
+					continue;
+				}
+				// build the query to delete the row
+				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$result = $query->execute($delete_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
-												SET updated_on=NOW()
-													$update_columns_sql
-												WHERE uuid=:uuid;	");
-			$result = $query->execute($update_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
-		}
-		// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['delete_sql_record_list_by_action'][$action],
-			(array)$this->form_info['delete_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
-			$this->inject_form_variables($delete_sql_record['for'], $params[':uuid']);
-			$for_parts = explode('.', $delete_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
-			} else {
-				// delete record with no referenced record to delete.... hmm...
-				continue;
-			}
-			// build the query to delete the row
-			$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
-			$result = $query->execute($delete_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 		}
 		// execute any redirect commands from form actions
 		if(isset($this->form_info['redirect_to_by_action'][$action])) {
@@ -2064,196 +2083,199 @@ class ease_form_handler {
 			}
 			$result = $this->core->send_email($mail_options);
 		}
-		// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['create_sql_record_list_by_action'][$action],
-			(array)$this->form_info['create_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
-			$this->inject_form_variables($create_sql_record['for'], $row['easerowid'], $row);
-			$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
-			$create_sql_record_new_row = array();
-			if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
-				foreach($create_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $row['easerowid'], $row);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+		// only process SQL backed form actions if a database connection exists and hasn't been disabled
+		if($this->core->db && !$this->core->db_disabled) {
+			// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['create_sql_record_list_by_action'][$action],
+				(array)$this->form_info['create_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
+				$this->inject_form_variables($create_sql_record['for'], $row['easerowid'], $row);
+				$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
+				$create_sql_record_new_row = array();
+				if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
+					foreach($create_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $row['easerowid'], $row);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$create_sql_record_new_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
-				foreach($create_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$create_sql_record_new_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
-			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
-						}
-					}
-				}
-			} else {
-				// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
-				$custom_columns_sql = '';
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $this->core->reserved_sql_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
-						} else {
-							$custom_columns_sql .= ", `$column` text NOT NULL default ''";
-						}
-					}
-				}
-				$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
-								instance_id int NOT NULL PRIMARY KEY auto_increment,
-								created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
-								updated_on timestamp NOT NULL,
-								uuid varchar(32) NOT NULL UNIQUE
-								$custom_columns_sql
-							);	";
-				$this->core->db->exec($sql);
-			}
-			// insert the new row
-			$create_sql_record_params = array();
-			if(isset($create_sql_record_new_row['uuid'])) {
-				$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
-				unset($create_sql_record_new_row['uuid']);
-			} else {
-				$create_sql_record_params[':uuid'] = $this->core->new_uuid();
-			}
-			$insert_columns_sql = '';
-			foreach($create_sql_record_new_row as $key=>$value) {
-				$insert_columns_sql .= ",`$key`=:$key";
-				$create_sql_record_params[":$key"] = (string)$value;
-			}
-			$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
-												SET uuid=:uuid
-													$insert_columns_sql;	");
-			$query->execute($create_sql_record_params);
-		}
-		// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['update_sql_record_list_by_action'][$action],
-			(array)$this->form_info['update_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
-			$this->inject_form_variables($update_sql_record['for'], $row['easerowid'], $row);
-			$for_parts = explode('.', $update_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
-			} else {
-				// update record with no referenced record to update.... hmm...
-				continue;
-			}
-			if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
-				foreach($update_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $row['easerowid'], $row);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+				if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
+					foreach($create_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$update_sql_record_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
-				foreach($update_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
 						}
 					}
 				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				} else {
+					// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
+					$custom_columns_sql = '';
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $this->core->reserved_sql_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
+							} else {
+								$custom_columns_sql .= ", `$column` text NOT NULL default ''";
+							}
+						}
+					}
+					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+									instance_id int NOT NULL PRIMARY KEY auto_increment,
+									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+									updated_on timestamp NOT NULL,
+									uuid varchar(32) NOT NULL UNIQUE
+									$custom_columns_sql
+								);	";
+					$this->core->db->exec($sql);
+				}
+				// insert the new row
+				$create_sql_record_params = array();
+				if(isset($create_sql_record_new_row['uuid'])) {
+					$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
+					unset($create_sql_record_new_row['uuid']);
+				} else {
+					$create_sql_record_params[':uuid'] = $this->core->new_uuid();
+				}
+				$insert_columns_sql = '';
+				foreach($create_sql_record_new_row as $key=>$value) {
+					$insert_columns_sql .= ",`$key`=:$key";
+					$create_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+													SET uuid=:uuid
+														$insert_columns_sql;	");
+				$query->execute($create_sql_record_params);
 			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($update_sql_record_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($update_sql_record_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+			// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['update_sql_record_list_by_action'][$action],
+				(array)$this->form_info['update_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
+				$this->inject_form_variables($update_sql_record['for'], $row['easerowid'], $row);
+				$for_parts = explode('.', $update_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
+				} else {
+					// update record with no referenced record to update.... hmm...
+					continue;
+				}
+				if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
+					foreach($update_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $row['easerowid'], $row);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
+							}
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$update_sql_record_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
+				if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
+					foreach($update_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
+							}
+						}
+					}
+				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($update_sql_record_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($update_sql_record_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				}
+				// build the query to update the row
+				$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
+				unset($update_sql_record_row['uuid']);
+				$update_columns_sql = '';
+				foreach($update_sql_record_row as $key=>$value) {
+					$update_columns_sql .= ",`$key`=:$key";
+					$update_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+													SET updated_on=NOW()
+														$update_columns_sql
+													WHERE uuid=:uuid;	");
+				$result = $query->execute($update_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			// build the query to update the row
-			$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
-			unset($update_sql_record_row['uuid']);
-			$update_columns_sql = '';
-			foreach($update_sql_record_row as $key=>$value) {
-				$update_columns_sql .= ",`$key`=:$key";
-				$update_sql_record_params[":$key"] = (string)$value;
+			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['delete_sql_record_list_by_action'][$action],
+				(array)$this->form_info['delete_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
+				$this->inject_form_variables($delete_sql_record['for'], $row['easerowid'], $row);
+				$for_parts = explode('.', $delete_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
+				} else {
+					// delete record with no referenced record to delete.... hmm...
+					continue;
+				}
+				// build the query to delete the row
+				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$result = $query->execute($delete_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
-												SET updated_on=NOW()
-													$update_columns_sql
-												WHERE uuid=:uuid;	");
-			$result = $query->execute($update_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
-		}
-		// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['delete_sql_record_list_by_action'][$action],
-			(array)$this->form_info['delete_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
-			$this->inject_form_variables($delete_sql_record['for'], $row['easerowid'], $row);
-			$for_parts = explode('.', $delete_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
-			} else {
-				// delete record with no referenced record to delete.... hmm...
-				continue;
-			}
-			// build the query to delete the row
-			$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
-			$result = $query->execute($delete_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 		}
 		// execute any redirect commands from form actions
 		if(isset($this->form_info['redirect_to_by_action'][$action]) && trim($this->form_info['redirect_to_by_action'][$action])!='') {
@@ -2558,196 +2580,199 @@ class ease_form_handler {
 			}
 			$result = $this->core->send_email($mail_options);
 		}
-		// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['create_sql_record_list_by_action'][$action],
-			(array)$this->form_info['create_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
-			$this->inject_form_variables($create_sql_record['for'], $this->form_info['row_uuid'], $row);
-			$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
-			$create_sql_record_new_row = array();
-			if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
-				foreach($create_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $this->form_info['row_uuid'], $row);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+		// only process SQL backed form actions if a database connection exists and hasn't been disabled
+		if($this->core->db && !$this->core->db_disabled) {
+			// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['create_sql_record_list_by_action'][$action],
+				(array)$this->form_info['create_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
+				$this->inject_form_variables($create_sql_record['for'], $this->form_info['row_uuid'], $row);
+				$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
+				$create_sql_record_new_row = array();
+				if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
+					foreach($create_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $this->form_info['row_uuid'], $row);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$create_sql_record_new_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
-				foreach($create_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$create_sql_record_new_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
-			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
-						}
-					}
-				}
-			} else {
-				// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
-				$custom_columns_sql = '';
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $this->core->reserved_sql_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
-						} else {
-							$custom_columns_sql .= ", `$column` text NOT NULL default ''";
-						}
-					}
-				}
-				$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
-								instance_id int NOT NULL PRIMARY KEY auto_increment,
-								created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
-								updated_on timestamp NOT NULL,
-								uuid varchar(32) NOT NULL UNIQUE
-								$custom_columns_sql
-							);	";
-				$this->core->db->exec($sql);
-			}
-			// insert the new row
-			$create_sql_record_params = array();
-			if(isset($create_sql_record_new_row['uuid'])) {
-				$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
-				unset($create_sql_record_new_row['uuid']);
-			} else {
-				$create_sql_record_params[':uuid'] = $this->core->new_uuid();
-			}
-			$insert_columns_sql = '';
-			foreach($create_sql_record_new_row as $key=>$value) {
-				$insert_columns_sql .= ",`$key`=:$key";
-				$create_sql_record_params[":$key"] = (string)$value;
-			}
-			$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
-												SET uuid=:uuid
-													$insert_columns_sql;	");
-			$query->execute($create_sql_record_params);
-		}
-		// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['update_sql_record_list_by_action'][$action],
-			(array)$this->form_info['update_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
-			$this->inject_form_variables($update_sql_record['for'], $this->form_info['row_uuid'], $row);
-			$for_parts = explode('.', $update_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
-			} else {
-				// update record with no referenced record to update.... hmm...
-				continue;
-			}
-			if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
-				foreach($update_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $this->form_info['row_uuid'], $row);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+				if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
+					foreach($create_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$update_sql_record_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
-				foreach($update_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
 						}
 					}
 				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				} else {
+					// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
+					$custom_columns_sql = '';
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $this->core->reserved_sql_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
+							} else {
+								$custom_columns_sql .= ", `$column` text NOT NULL default ''";
+							}
+						}
+					}
+					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+									instance_id int NOT NULL PRIMARY KEY auto_increment,
+									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+									updated_on timestamp NOT NULL,
+									uuid varchar(32) NOT NULL UNIQUE
+									$custom_columns_sql
+								);	";
+					$this->core->db->exec($sql);
+				}
+				// insert the new row
+				$create_sql_record_params = array();
+				if(isset($create_sql_record_new_row['uuid'])) {
+					$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
+					unset($create_sql_record_new_row['uuid']);
+				} else {
+					$create_sql_record_params[':uuid'] = $this->core->new_uuid();
+				}
+				$insert_columns_sql = '';
+				foreach($create_sql_record_new_row as $key=>$value) {
+					$insert_columns_sql .= ",`$key`=:$key";
+					$create_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+													SET uuid=:uuid
+														$insert_columns_sql;	");
+				$query->execute($create_sql_record_params);
 			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($update_sql_record_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($update_sql_record_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+			// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['update_sql_record_list_by_action'][$action],
+				(array)$this->form_info['update_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
+				$this->inject_form_variables($update_sql_record['for'], $this->form_info['row_uuid'], $row);
+				$for_parts = explode('.', $update_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
+				} else {
+					// update record with no referenced record to update.... hmm...
+					continue;
+				}
+				if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
+					foreach($update_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $this->form_info['row_uuid'], $row);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
+							}
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$update_sql_record_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
+				if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
+					foreach($update_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
+							}
+						}
+					}
+				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($update_sql_record_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($update_sql_record_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				}
+				// build the query to update the row
+				$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
+				unset($update_sql_record_row['uuid']);
+				$update_columns_sql = '';
+				foreach($update_sql_record_row as $key=>$value) {
+					$update_columns_sql .= ",`$key`=:$key";
+					$update_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+													SET updated_on=NOW()
+														$update_columns_sql
+													WHERE uuid=:uuid;	");
+				$result = $query->execute($update_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			// build the query to update the row
-			$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
-			unset($update_sql_record_row['uuid']);
-			$update_columns_sql = '';
-			foreach($update_sql_record_row as $key=>$value) {
-				$update_columns_sql .= ",`$key`=:$key";
-				$update_sql_record_params[":$key"] = (string)$value;
+			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['delete_sql_record_list_by_action'][$action],
+				(array)$this->form_info['delete_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
+				$this->inject_form_variables($delete_sql_record['for'], $this->form_info['row_uuid'], $row);
+				$for_parts = explode('.', $delete_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
+				} else {
+					// delete record with no referenced record to delete.... hmm...
+					continue;
+				}
+				// build the query to delete the row
+				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$result = $query->execute($delete_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
-												SET updated_on=NOW()
-													$update_columns_sql
-												WHERE uuid=:uuid;	");
-			$result = $query->execute($update_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
-		}
-		// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['delete_sql_record_list_by_action'][$action],
-			(array)$this->form_info['delete_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
-			$this->inject_form_variables($delete_sql_record['for'], $this->form_info['row_uuid'], $row);
-			$for_parts = explode('.', $delete_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
-			} else {
-				// delete record with no referenced record to delete.... hmm...
-				continue;
-			}
-			// build the query to delete the row
-			$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
-			$result = $query->execute($delete_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 		}
 		// execute any redirect commands from form actions
 		if(trim($this->form_info['redirect_to_by_action'][$action])!='') {
@@ -2763,100 +2788,420 @@ class ease_form_handler {
 	}
 
 	function delete_row_from_googlespreadsheet($action) {
-		// TODO!  all of it.  not current implemented because the current API doesn't support removing rows, only blanking them out
+		// refresh the google access token if necessary
+		$this->core->validate_google_access_token();
+		// initialize a google Google Drive Spreadsheet API client
+		require_once 'ease/lib/Spreadsheet/Autoloader.php';
+		$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
+		$serviceRequest = new Google\Spreadsheet\DefaultServiceRequest($request);
+		Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
+		$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
+		// determine if the Google Drive Spreadsheet was referenced by name or ID
+		if($this->form_info['google_spreadsheet_id']) {
+			$spreadSheet = $spreadsheetService->getSpreadsheetById($this->form_info['google_spreadsheet_id']);
+			if($spreadSheet===null) {
+				// there was an error loading the Google Drive Spreadsheet by ID...
+				// flush the cached meta data for the Google Drive Spreadsheet ID which may no longer be valid
+				$this->core->flush_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id']);
+				// try deleting the row again after blanking out the ID, so the Google Drive Spreadsheet "Name" will be used if set
+				$this->form_info['google_spreadsheet_id'] = '';
+				$this->delete_row_from_googlespreadsheet();
+				exit;
+			}
+			$google_spreadsheet_id = $this->form_info['google_spreadsheet_id'];
+		} elseif($this->form_info['google_spreadsheet_name']) {
+			$spreadsheetFeed = $spreadsheetService->getSpreadsheets();
+			$spreadSheet = $spreadsheetFeed->getByTitle($this->form_info['google_spreadsheet_name']);
+			if($spreadSheet===null) {
+				echo "Error!  Unable to load Google Drive Spreadsheet named: " . htmlspecialchars($this->form_info['google_spreadsheet_name']);
+				exit;
+			}
+		}
+		// ensure a Google Drive Spreadsheet was laoded
+		if($spreadSheet===null) {
+			echo "Error!  Unable to load Google Drive Spreadsheet";
+			exit;
+		}
+		// load the worksheets in the Google Drive Spreadsheet
+		$worksheetFeed = $spreadSheet->getWorksheets();
+		if($this->form_info['save_to_sheet']) {
+			$worksheet = $worksheetFeed->getByTitle($this->form_info['save_to_sheet']);
+			if($worksheet===null) {
+				echo "Error!  Unable to load Google Drive Worksheet named: " . htmlspecialchars($this->form_info['save_to_sheet']);
+				exit;
+			}
+		} else {
+			$worksheet = $worksheetFeed->getFirstSheet();
+		}
+		// check for unloaded worksheet
+		if($worksheet===null) {
+			echo "Error!  Unable to load Google Drive Worksheet";
+			exit;
+		}
+		// load the meta data for the sheet
+		if($this->form_info['google_spreadsheet_id']) {
+			// load the Google Drive Spreadsheet by the referenced ID
+			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id'], $this->form_info['save_to_sheet']);
+		} elseif($this->form_info['google_spreadsheet_name']) {
+			// load the Google Drive Spreadsheet by the referenced name
+			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($this->form_info['google_spreadsheet_name'], $this->form_info['save_to_sheet']);
+		}
+		// initialize column letter by number array
+		$alphas = array();
+		for($i='A'; $i<'ZZ'; $i++) {
+			$alphas[] = $i;
+		}
+		// delete the row... load a cell so it can be updated for each column to blank it out
+		$cellFeed = $worksheet->getCellFeed();
+		$cellEntries = $cellFeed->getEntries();
+		// build array of row number by EASE Row ID
+		$row_number_by_ease_row_id = array();
+		foreach($cellEntries as $cellEntry) {
+			$cell_title = $cellEntry->getTitle();
+			if(preg_match('/([A-Z]+)([0-9]+)/is', $cell_title, $cell_matches)) {
+				if($cell_matches[1]==$spreadsheet_meta_data['column_letter_by_name']['easerowid']) {
+					$row_number_by_ease_row_id[$cellEntry->getContent()] = $cell_matches[2];
+				}
+			}
+		}
+		// update each cell in the referenced row
+		foreach($spreadsheet_meta_data['column_letter_by_name'] as $key) {
+			$column_number = array_search(strtoupper($key), $alphas) + 1;
+			$cellEntry->setContent('');
+			$cellEntry->setCell($this->form_info['row_number'], $column_number);
+			$cellEntry->update();
+		}
+		// execute any set cookie or session variable commands for the form action
+		@$this->form_info['set_to_list_by_action'][$action] = array_merge(
+			(array)$this->form_info['set_to_list_by_action'][$action],
+			(array)$this->form_info['set_to_list_by_action']['done']
+		);
+		foreach($this->form_info['set_to_list_by_action'][$action] as $set_to_command) {
+			$value = $set_to_command['value'];
+			$this->inject_form_variables($value, $this->form_info['row_uuid'], $row);
+			switch(strtolower($set_to_command['bucket'])) {
+				case 'session':
+					$_SESSION[$set_to_command['key']] = $value;
+					break;
+				case 'cookie':
+					setcookie($set_to_command['key'], $value, time() + 60 * 60 * 24 * 365, '/');
+					$_COOKIE[$set_to_command['key']] = $value;
+					break;
+				default:
+			}
+		}
+		// execute any SEND EMAIL when creating commands
+		@$this->form_info['send_email_list_by_action'][$action] = array_merge(
+			(array)$this->form_info['send_email_list_by_action'][$action],
+			(array)$this->form_info['send_email_list_by_action']['done']
+		);
+		foreach($this->form_info['send_email_list_by_action'][$action] as $mail_options) {
+			foreach(array_keys($mail_options) as $mail_option_key) {
+				$this->inject_form_variables($mail_options[$mail_option_key], $this->form_info['row_uuid'], $row);
+			}
+			$result = $this->core->send_email($mail_options);
+		}
+		// only process SQL backed form actions if a database connection exists and hasn't been disabled
+		if($this->core->db && !$this->core->db_disabled) {
+			// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['create_sql_record_list_by_action'][$action],
+				(array)$this->form_info['create_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
+				$this->inject_form_variables($create_sql_record['for'], $this->form_info['row_uuid'], $row);
+				$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
+				$create_sql_record_new_row = array();
+				if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
+					foreach($create_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $this->form_info['row_uuid'], $row);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
+							}
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$create_sql_record_new_row[$set_to_command['key']] = $set_value;
+						}
+					}
+				}
+				if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
+					foreach($create_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
+							}
+						}
+					}
+				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				} else {
+					// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
+					$custom_columns_sql = '';
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $this->core->reserved_sql_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
+							} else {
+								$custom_columns_sql .= ", `$column` text NOT NULL default ''";
+							}
+						}
+					}
+					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+									instance_id int NOT NULL PRIMARY KEY auto_increment,
+									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+									updated_on timestamp NOT NULL,
+									uuid varchar(32) NOT NULL UNIQUE
+									$custom_columns_sql
+								);	";
+					$this->core->db->exec($sql);
+				}
+				// insert the new row
+				$create_sql_record_params = array();
+				if(isset($create_sql_record_new_row['uuid'])) {
+					$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
+					unset($create_sql_record_new_row['uuid']);
+				} else {
+					$create_sql_record_params[':uuid'] = $this->core->new_uuid();
+				}
+				$insert_columns_sql = '';
+				foreach($create_sql_record_new_row as $key=>$value) {
+					$insert_columns_sql .= ",`$key`=:$key";
+					$create_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+													SET uuid=:uuid
+														$insert_columns_sql;	");
+				$query->execute($create_sql_record_params);
+			}
+			// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['update_sql_record_list_by_action'][$action],
+				(array)$this->form_info['update_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
+				$this->inject_form_variables($update_sql_record['for'], $this->form_info['row_uuid'], $row);
+				$for_parts = explode('.', $update_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
+				} else {
+					// update record with no referenced record to update.... hmm...
+					continue;
+				}
+				if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
+					foreach($update_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $this->form_info['row_uuid'], $row);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
+							}
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$update_sql_record_row[$set_to_command['key']] = $set_value;
+						}
+					}
+				}
+				if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
+					foreach($update_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
+							}
+						}
+					}
+				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($update_sql_record_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($update_sql_record_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				}
+				// build the query to update the row
+				$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
+				unset($update_sql_record_row['uuid']);
+				$update_columns_sql = '';
+				foreach($update_sql_record_row as $key=>$value) {
+					$update_columns_sql .= ",`$key`=:$key";
+					$update_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+													SET updated_on=NOW()
+														$update_columns_sql
+													WHERE uuid=:uuid;	");
+				$result = $query->execute($update_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
+			}
+			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['delete_sql_record_list_by_action'][$action],
+				(array)$this->form_info['delete_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
+				$this->inject_form_variables($delete_sql_record['for'], $this->form_info['row_uuid'], $row);
+				$for_parts = explode('.', $delete_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
+				} else {
+					// delete record with no referenced record to delete.... hmm...
+					continue;
+				}
+				// build the query to delete the row
+				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$result = $query->execute($delete_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
+			}
+		}
+		// execute any redirect commands from form actions
+		if(trim($this->form_info['redirect_to_by_action'][$action])!='') {
+			$this->inject_form_variables($this->form_info['redirect_to_by_action'][$action], $this->form_info['row_uuid'], $row);
+			header('Location: ' . $this->form_info['redirect_to_by_action'][$action]);
+		} elseif(trim($this->form_info['redirect_to_by_action']['done'])!='') {
+			$this->inject_form_variables($this->form_info['redirect_to_by_action']['done'], $this->form_info['row_uuid'], $row);
+			header('Location: ' . $this->form_info['redirect_to_by_action']['done']);
+		} else {
+			// a landing page was not set... default to the homepage
+			header('Location: /');
+		}
 	}
 
 	function process_checklist($action) {
-		// query for a list of checkable row IDs
-		$checklist_rows = array();
-		$query = "	SELECT `{$this->form_info['sql_table_name']}`.uuid
-					FROM `{$this->form_info['sql_table_name']}`
-						{$this->form_info['join_sql_string']}
-					{$this->form_info['where_sql_string']}
-					{$this->form_info['order_by_sql_string']};	";
-		if($result = $this->core->db->query($query)) {
-			$checklist_rows = $result->fetchAll(PDO::FETCH_ASSOC);
-			// process the SET commands for the form action, and build column=>value update arrays based on checked status
-			$update_column_when_checked = array();
-			@$this->form_info['set_to_list_by_action'][$action . '-checked'] = array_merge(
-				(array)$this->form_info['set_to_list_by_action'][$action . '-checked'],
-				(array)$this->form_info['set_to_list_by_action'][$action],
-				(array)$this->form_info['set_to_list_by_action']['done'],
-				(array)$this->form_info['set_to_list_by_action']['checked']
-			);
-			foreach($this->form_info['set_to_list_by_action'][$action . '-checked'] as $bucket=>$value) {
-				$column_reference = null;
-				$bucket_key_parts = explode('.', $bucket, 2);
-				if(count($bucket_key_parts)==2) {
-					$table_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(rtrim($bucket_key_parts[0])));
-					if($table_reference==$this->form_info['sql_table_name'] || $table_reference=='row') {
-						$column_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(ltrim($bucket_key_parts[1])));
+		// only process SQL backed checklist forms if a database connection exists and hasn't been disabled
+		if($this->core->db && !$this->core->db_disabled) {
+			// query for a list of checkable row IDs
+			$checklist_rows = array();
+			$query = "	SELECT `{$this->form_info['sql_table_name']}`.uuid
+						FROM `{$this->form_info['sql_table_name']}`
+							{$this->form_info['join_sql_string']}
+						{$this->form_info['where_sql_string']}
+						{$this->form_info['order_by_sql_string']};	";
+			if($result = $this->core->db->query($query)) {
+				$checklist_rows = $result->fetchAll(PDO::FETCH_ASSOC);
+				// process the SET commands for the form action, and build column=>value update arrays based on checked status
+				$update_column_when_checked = array();
+				@$this->form_info['set_to_list_by_action'][$action . '-checked'] = array_merge(
+					(array)$this->form_info['set_to_list_by_action'][$action . '-checked'],
+					(array)$this->form_info['set_to_list_by_action'][$action],
+					(array)$this->form_info['set_to_list_by_action']['done'],
+					(array)$this->form_info['set_to_list_by_action']['checked']
+				);
+				foreach($this->form_info['set_to_list_by_action'][$action . '-checked'] as $bucket=>$value) {
+					$column_reference = null;
+					$bucket_key_parts = explode('.', $bucket, 2);
+					if(count($bucket_key_parts)==2) {
+						$table_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(rtrim($bucket_key_parts[0])));
+						if($table_reference==$this->form_info['sql_table_name'] || $table_reference=='row') {
+							$column_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(ltrim($bucket_key_parts[1])));
+						}
+					} else {
+						$column_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(trim($bucket)));
 					}
-				} else {
-					$column_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(trim($bucket)));
-				}
-				if($column_reference) {
-					$update_column_when_checked[$column_reference] = $value;
-				}
-			}
-			$update_column_when_unchecked = array();
-			@$this->form_info['set_to_list_by_action'][$action . '-unchecked'] = array_merge(
-				(array)$this->form_info['set_to_list_by_action'][$action . '-unchecked'],
-				(array)$this->form_info['set_to_list_by_action'][$action],
-				(array)$this->form_info['set_to_list_by_action']['done'],
-				(array)$this->form_info['set_to_list_by_action']['unchecked']
-			);
-			foreach($this->form_info['set_to_list_by_action'][$action . '-unchecked'] as $bucket=>$value) {
-				$column_reference = null;
-				$bucket_key_parts = explode('.', $bucket, 2);
-				if(count($bucket_key_parts)==2) {
-					$table_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(rtrim($bucket_key_parts[0])));
-					if($table_reference==$this->form_info['sql_table_name'] || $table_reference=='row') {
-						$column_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(ltrim($bucket_key_parts[1])));
-					}
-				} else {
-					$column_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(trim($bucket)));
-				}
-				if($column_reference) {
-					$update_column_when_unchecked[$column_reference] = $value;
-				}
-			}
-			// validate the referenced SQL table exists by querying for all column names
-			$result = $this->core->db->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{$this->form_info['sql_table_name']}' AND TABLE_SCHEMA=database();");
-			if($existing_columns = $result->fetchAll(PDO::FETCH_COLUMN)) {
-				$all_referenced_columns = array_merge(array_keys($update_column_when_checked), array_keys($update_column_when_unchecked));
-				foreach($all_referenced_columns as $column) {
-					if(!in_array($column, $existing_columns)) {
-						$this->core->db->exec("ALTER TABLE `{$this->form_info['sql_table_name']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+					if($column_reference) {
+						$update_column_when_checked[$column_reference] = $value;
 					}
 				}
-			}
-			// process each checkable row, and apply any check action updates from SET commands
-			foreach($checklist_rows as $row_key=>$row) {
-				if(isset($_POST['ease_checklist_item_' . $row['uuid']]) && trim($_POST['ease_checklist_item_' . $row['uuid']])!='') {
-					// the row was checked
-					foreach($update_column_when_checked as $column=>$value) {
-						$query = $this->core->db->prepare("UPDATE `{$this->form_info['sql_table_name']}` SET `$column`=:$column WHERE uuid=:uuid;");
-						$params = array(":$column"=>$value, ':uuid'=>$row['uuid']);
-						$result = $query->execute($params);
+				$update_column_when_unchecked = array();
+				@$this->form_info['set_to_list_by_action'][$action . '-unchecked'] = array_merge(
+					(array)$this->form_info['set_to_list_by_action'][$action . '-unchecked'],
+					(array)$this->form_info['set_to_list_by_action'][$action],
+					(array)$this->form_info['set_to_list_by_action']['done'],
+					(array)$this->form_info['set_to_list_by_action']['unchecked']
+				);
+				foreach($this->form_info['set_to_list_by_action'][$action . '-unchecked'] as $bucket=>$value) {
+					$column_reference = null;
+					$bucket_key_parts = explode('.', $bucket, 2);
+					if(count($bucket_key_parts)==2) {
+						$table_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(rtrim($bucket_key_parts[0])));
+						if($table_reference==$this->form_info['sql_table_name'] || $table_reference=='row') {
+							$column_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(ltrim($bucket_key_parts[1])));
+						}
+					} else {
+						$column_reference = preg_replace('/[^a-z0-9]+/is', '_', strtolower(trim($bucket)));
 					}
-				} else {
-					// the row was NOT checked
-					foreach($update_column_when_unchecked as $column=>$value) {
-						$query = $this->core->db->prepare("UPDATE `{$this->form_info['sql_table_name']}` SET `$column`=:$column WHERE uuid=:uuid;");
-						$params = array(":$column"=>$value, ':uuid'=>$row['uuid']);
-						$result = $query->execute($params);
+					if($column_reference) {
+						$update_column_when_unchecked[$column_reference] = $value;
 					}
 				}
-			}
-		} else {
-			// no results from the checklist query for checkable rows... check for a DB error, even though that should never happen
-			$error = $this->core->db->errorInfo();
-			if($error[0]!='00000') {
-				$this->core->html_dump($error, 'Checklist Query Error');
-				$this->core->html_dump($this->form_info, 'EASE Form info');
-				$this->core->html_dump($_POST, 'POST data');
-				exit;
+				// validate the referenced SQL table exists by querying for all column names
+				$result = $this->core->db->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{$this->form_info['sql_table_name']}' AND TABLE_SCHEMA=database();");
+				if($existing_columns = $result->fetchAll(PDO::FETCH_COLUMN)) {
+					$all_referenced_columns = array_merge(array_keys($update_column_when_checked), array_keys($update_column_when_unchecked));
+					foreach($all_referenced_columns as $column) {
+						if(!in_array($column, $existing_columns)) {
+							$this->core->db->exec("ALTER TABLE `{$this->form_info['sql_table_name']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+						}
+					}
+				}
+				// process each checkable row, and apply any check action updates from SET commands
+				foreach($checklist_rows as $row_key=>$row) {
+					if(isset($_POST['ease_checklist_item_' . $row['uuid']]) && trim($_POST['ease_checklist_item_' . $row['uuid']])!='') {
+						// the row was checked
+						foreach($update_column_when_checked as $column=>$value) {
+							$query = $this->core->db->prepare("UPDATE `{$this->form_info['sql_table_name']}` SET `$column`=:$column WHERE uuid=:uuid;");
+							$params = array(":$column"=>$value, ':uuid'=>$row['uuid']);
+							$result = $query->execute($params);
+						}
+					} else {
+						// the row was NOT checked
+						foreach($update_column_when_unchecked as $column=>$value) {
+							$query = $this->core->db->prepare("UPDATE `{$this->form_info['sql_table_name']}` SET `$column`=:$column WHERE uuid=:uuid;");
+							$params = array(":$column"=>$value, ':uuid'=>$row['uuid']);
+							$result = $query->execute($params);
+						}
+					}
+				}
+			} else {
+				// no results from the checklist query for checkable rows... check for a DB error, even though that should never happen
+				$error = $this->core->db->errorInfo();
+				if($error[0]!='00000') {
+					$this->core->html_dump($error, 'Checklist Query Error');
+					$this->core->html_dump($this->form_info, 'EASE Form info');
+					$this->core->html_dump($_POST, 'POST data');
+					exit;
+				}
 			}
 		}
 		// execute any set cookie or session variable commands for the form action
@@ -2893,196 +3238,199 @@ class ease_form_handler {
 			}
 			$result = $this->core->send_email($mail_options);
 		}
-		// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['create_sql_record_list_by_action'][$action],
-			(array)$this->form_info['create_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
-			$this->inject_form_variables($create_sql_record['for'], $params[':uuid']);
-			$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
-			$create_sql_record_new_row = array();
-			if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
-				foreach($create_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid']);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+		// only process SQL backed form actions if a database connection exists and hasn't been disabled
+		if($this->core->db && !$this->core->db_disabled) {
+			// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['create_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['create_sql_record_list_by_action'][$action],
+				(array)$this->form_info['create_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['create_sql_record_list_by_action'][$action] as $create_sql_record) {
+				$this->inject_form_variables($create_sql_record['for'], $params[':uuid']);
+				$create_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($create_sql_record['for'])));
+				$create_sql_record_new_row = array();
+				if(isset($create_sql_record['set_to_commands']) && is_array($create_sql_record['set_to_commands'])) {
+					foreach($create_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$create_sql_record['for'] || $set_to_command['bucket']==$create_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $params[':uuid']);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$create_sql_record_new_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
-				foreach($create_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$create_sql_record_new_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
-			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
-						}
-					}
-				}
-			} else {
-				// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
-				$custom_columns_sql = '';
-				foreach(array_keys($create_sql_record_new_row) as $column) {
-					if(!in_array($column, $this->core->reserved_sql_columns)) {
-						if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-							$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
-						} else {
-							$custom_columns_sql .= ", `$column` text NOT NULL default ''";
-						}
-					}
-				}
-				$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
-								instance_id int NOT NULL PRIMARY KEY auto_increment,
-								created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
-								updated_on timestamp NOT NULL,
-								uuid varchar(32) NOT NULL UNIQUE
-								$custom_columns_sql
-							);	";
-				$this->core->db->exec($sql);
-			}
-			// insert the new row
-			$create_sql_record_params = array();
-			if(isset($create_sql_record_new_row['uuid'])) {
-				$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
-				unset($create_sql_record_new_row['uuid']);
-			} else {
-				$create_sql_record_params[':uuid'] = $this->core->new_uuid();
-			}
-			$insert_columns_sql = '';
-			foreach($create_sql_record_new_row as $key=>$value) {
-				$insert_columns_sql .= ",`$key`=:$key";
-				$create_sql_record_params[":$key"] = (string)$value;
-			}
-			$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
-												SET uuid=:uuid
-													$insert_columns_sql;	");
-			$query->execute($create_sql_record_params);
-		}
-		// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['update_sql_record_list_by_action'][$action],
-			(array)$this->form_info['update_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
-			$this->inject_form_variables($update_sql_record['for'], $params[':uuid']);
-			$for_parts = explode('.', $update_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
-			} else {
-				// update record with no referenced record to update.... hmm...
-				continue;
-			}
-			if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
-				foreach($update_sql_record['set_to_commands'] as $set_to_command) {
-					if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
-						$this->inject_form_variables($set_to_command['value'], $params[':uuid']);
-						$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
-						if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
-							// set to quoted string
-							$set_value = $inner_matches[1];
-						} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
-							// math expression value, evaluate the expression to calculate value
-							$eval_result = @eval("\$set_value = {$set_to_command['value']};");
-							if($eval_result===false) {
-								// there was an error evaluating the math expression... set the value to the broken math expression
-								$set_value = $set_to_command['value'];
+				if(isset($create_sql_record['round_to_commands']) && is_array($create_sql_record['round_to_commands'])) {
+					foreach($create_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$create_sql_record['for'] || $round_to_command['bucket']==$create_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$create_sql_record_new_row[$round_to_command['key']] = round($create_sql_record_new_row[$round_to_command['key']], $round_to_command['decimals']);
 							}
-						} else {
-							$set_value = '';
-						}
-						ease_interpreter::apply_context_stack($set_value, $context_stack);
-						$update_sql_record_row[$set_to_command['key']] = $set_value;
-					}
-				}
-			}
-			if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
-				foreach($update_sql_record['round_to_commands'] as $round_to_command) {
-					if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
-						if(isset($round_to_command['decimals'])) {
-							$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
 						}
 					}
 				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				} else {
+					// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
+					$custom_columns_sql = '';
+					foreach(array_keys($create_sql_record_new_row) as $column) {
+						if(!in_array($column, $this->core->reserved_sql_columns)) {
+							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
+								$custom_columns_sql .= ", `$column` mediumtext NOT NULL default ''";
+							} else {
+								$custom_columns_sql .= ", `$column` text NOT NULL default ''";
+							}
+						}
+					}
+					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+									instance_id int NOT NULL PRIMARY KEY auto_increment,
+									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+									updated_on timestamp NOT NULL,
+									uuid varchar(32) NOT NULL UNIQUE
+									$custom_columns_sql
+								);	";
+					$this->core->db->exec($sql);
+				}
+				// insert the new row
+				$create_sql_record_params = array();
+				if(isset($create_sql_record_new_row['uuid'])) {
+					$create_sql_record_params[':uuid'] = $create_sql_record_new_row['uuid'];
+					unset($create_sql_record_new_row['uuid']);
+				} else {
+					$create_sql_record_params[':uuid'] = $this->core->new_uuid();
+				}
+				$insert_columns_sql = '';
+				foreach($create_sql_record_new_row as $key=>$value) {
+					$insert_columns_sql .= ",`$key`=:$key";
+					$create_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+													SET uuid=:uuid
+														$insert_columns_sql;	");
+				$query->execute($create_sql_record_params);
 			}
-			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
-			if($result) {
-				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
-				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
-				foreach(array_keys($update_sql_record_row) as $column) {
-					if(!in_array($column, $existing_columns)) {
-						if(sizeof($update_sql_record_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
-						} else {
-							$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+			// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['update_sql_record_list_by_action'][$action],
+				(array)$this->form_info['update_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['update_sql_record_list_by_action'][$action] as $update_sql_record) {
+				$this->inject_form_variables($update_sql_record['for'], $params[':uuid']);
+				$for_parts = explode('.', $update_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$update_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$update_sql_record_row = array('uuid'=>trim($for_parts[1]));
+				} else {
+					// update record with no referenced record to update.... hmm...
+					continue;
+				}
+				if(isset($update_sql_record['set_to_commands']) && is_array($update_sql_record['set_to_commands'])) {
+					foreach($update_sql_record['set_to_commands'] as $set_to_command) {
+						if($set_to_command['bucket']=='' || $set_to_command['bucket']==$update_sql_record['for'] || $set_to_command['bucket']==$update_sql_record['as']) {
+							$this->inject_form_variables($set_to_command['value'], $params[':uuid']);
+							$context_stack = ease_interpreter::extract_context_stack($set_to_command['value']);
+							if(preg_match('/^\s*"(.*)"\s*$/s', $set_to_command['value'], $inner_matches)) {
+								// set to quoted string
+								$set_value = $inner_matches[1];
+							} elseif(preg_match('/^[() ^!%0-9\.+\*\/-]+$/s', $set_to_command['value'], $inner_matches)) {
+								// math expression value, evaluate the expression to calculate value
+								$eval_result = @eval("\$set_value = {$set_to_command['value']};");
+								if($eval_result===false) {
+									// there was an error evaluating the math expression... set the value to the broken math expression
+									$set_value = $set_to_command['value'];
+								}
+							} else {
+								$set_value = '';
+							}
+							ease_interpreter::apply_context_stack($set_value, $context_stack);
+							$update_sql_record_row[$set_to_command['key']] = $set_value;
 						}
 					}
 				}
+				if(isset($update_sql_record['round_to_commands']) && is_array($update_sql_record['round_to_commands'])) {
+					foreach($update_sql_record['round_to_commands'] as $round_to_command) {
+						if($round_to_command['bucket']=='' || $round_to_command['bucket']==$update_sql_record['for'] || $round_to_command['bucket']==$update_sql_record['as']) {
+							if(isset($round_to_command['decimals'])) {
+								$update_sql_record_row[$round_to_command['key']] = round($update_sql_record_row[$round_to_command['key']], $round_to_command['decimals']);
+							}
+						}
+					}
+				}
+				// make sure the SQL Table exists and has all the columns referenced in the new row
+				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				if($result) {
+					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
+					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+					foreach(array_keys($update_sql_record_row) as $column) {
+						if(!in_array($column, $existing_columns)) {
+							if(sizeof($update_sql_record_row[$column]) > 65535) {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							} else {
+								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							}
+						}
+					}
+				}
+				// build the query to update the row
+				$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
+				unset($update_sql_record_row['uuid']);
+				$update_columns_sql = '';
+				foreach($update_sql_record_row as $key=>$value) {
+					$update_columns_sql .= ",`$key`=:$key";
+					$update_sql_record_params[":$key"] = (string)$value;
+				}
+				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+													SET updated_on=NOW()
+														$update_columns_sql
+													WHERE uuid=:uuid;	");
+				$result = $query->execute($update_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			// build the query to update the row
-			$update_sql_record_params = array(':uuid'=>$update_sql_record_row['uuid']);
-			unset($update_sql_record_row['uuid']);
-			$update_columns_sql = '';
-			foreach($update_sql_record_row as $key=>$value) {
-				$update_columns_sql .= ",`$key`=:$key";
-				$update_sql_record_params[":$key"] = (string)$value;
+			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
+			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
+				(array)$this->form_info['delete_sql_record_list_by_action'][$action],
+				(array)$this->form_info['delete_sql_record_list_by_action']['done']
+			);
+			foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
+				$this->inject_form_variables($delete_sql_record['for'], $params[':uuid']);
+				$for_parts = explode('.', $delete_sql_record['for'], 2);
+				if(count($for_parts)==2) {
+					$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
+					$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
+				} else {
+					// delete record with no referenced record to delete.... hmm...
+					continue;
+				}
+				// build the query to delete the row
+				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$result = $query->execute($delete_sql_record_params);
+				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
-			$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
-												SET updated_on=NOW()
-													$update_columns_sql
-												WHERE uuid=:uuid;	");
-			$result = $query->execute($update_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
-		}
-		// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
-		@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
-			(array)$this->form_info['delete_sql_record_list_by_action'][$action],
-			(array)$this->form_info['delete_sql_record_list_by_action']['done']
-		);
-		foreach($this->form_info['delete_sql_record_list_by_action'][$action] as $delete_sql_record) {
-			$this->inject_form_variables($delete_sql_record['for'], $params[':uuid']);
-			$for_parts = explode('.', $delete_sql_record['for'], 2);
-			if(count($for_parts)==2) {
-				$delete_sql_record['for'] = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($for_parts[0])));
-				$delete_sql_record_params = array(':uuid'=>trim($for_parts[1]));
-			} else {
-				// delete record with no referenced record to delete.... hmm...
-				continue;
-			}
-			// build the query to delete the row
-			$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
-			$result = $query->execute($delete_sql_record_params);
-			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 		}
 		// execute any redirect commands from checklist form action
 		if(isset($this->form_info['redirect_to_by_action'][$action])) {

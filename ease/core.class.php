@@ -28,42 +28,42 @@ class ease_core {
 	public $memcache;
 	public $application_root;
 	public $web_basedir;
+	public $request_espx_path;
+	public $request_espx_path_dir;
 	public $ease_block_start = '<#';
 	public $ease_block_end = '#>';
 	public $global_reference_start = '[';
 	public $global_reference_end = ']';
-	public $service_endpoints = array(
-		'form'=>'/ease/form',
-		'google_oauth2callback'=>'/oauth2callback',
-		'json-rpc'=>'/ease/json-rpc',
-		'logout'=>'/logout'
-	);
-	public $google_spreadsheets = array();
-	public $google_spreadsheets_by_name = array();
-	public $reserved_buckets = array('system', 'session', 'cookie', 'url', 'uri', 'cache', 'config', 'request');
+	public $service_endpoints = array('form'=>'/ease/form', 'google_oauth2callback'=>'/oauth2callback', 'logout'=>'/logout');
+	public $reserved_buckets = array('system', 'session', 'cookie', 'url', 'uri', 'cache', 'config', 'request', 'post', 'form');
 	public $reserved_sql_tables = array('ease_config', 'ease_google_spreadsheets', 'ease_forms');
 	public $reserved_sql_columns = array('instance_id', 'id', 'uuid', 'created_on', 'updated_on');
-	public $request_espx_path;
-	public $request_espx_path_dir;
 	public $namespace = '';
+	public $google_spreadsheets = array();
+	public $google_spreadsheets_by_name = array();
+	public $catch_redirect = false;
+	public $redirect = null;
 	public $db_disabled = false;
 	public $php_disabled = false;
 	public $include_disabled = false;
 	public $include_from_sql = null;
+	public $inject_config_disabled = false;
+	public $deliver_disabled = false;
+	public $file_upload_disabled = false;
 
 	function __construct($params=array()) {
-		// default to UTF-8 encoding when processing and generating text
+		// use UTF-8 character encoding when parsing or generating text
 		ini_set('default_charset', 'UTF-8');
-		// set application root directory
+		// configure application root directory
 		if(isset($params['application_root'])) {
 			$this->application_root = $params['application_root'];
 		} else {
 			// default the app root directory to the directory above the 'ease' directory containing this file
 			$this->application_root = preg_replace('@' . preg_quote(DIRECTORY_SEPARATOR, '@') . 'ease$@', '', dirname(__FILE__));
 		}
-		// add the application root directory to the include path list, as well as /ease/lib/
+		// add the application root directory, and "/ease/lib/" to the list of include paths
 		set_include_path($this->application_root . PATH_SEPARATOR . get_include_path() . PATH_SEPARATOR . $this->application_root . DIRECTORY_SEPARATOR . 'ease' . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR);
-		// set environment (ex: DEV, TEST, INT, QA, UAT, PROD)
+		// configure environment (e.g. DEV, TEST, INT, QA, UAT, PROD)
 		if(isset($params['environment'])) {
 			// an environment setting was provided with the initialization parameters
 			$this->environment = $params['environment'];
@@ -75,15 +75,15 @@ class ease_core {
 				$this->environment = 'PROD';
 			}
 		}
-		// process the EASE configuration file (easeConfig.json in the appliation root)
+		// process the EASE configuration file in the application root in a file named easeConfig.json
 		if(file_exists($this->application_root . DIRECTORY_SEPARATOR . 'easeConfig.json')) {
 			$this->config = json_decode(file_get_contents($this->application_root . DIRECTORY_SEPARATOR . 'easeConfig.json'), true);
 		} else {
 			// an EASE configuration file was not found.  use the values in the PHP superglobal $_SERVER as the configuration
-			// this method is used for AWS, and is preferred as it saves loading and parsing a JSON file with every request
+			// this method is used for AWS, and is the preferred configuration method as it saves loading and parsing a JSON file for every request
 			$this->config = $_SERVER;
 		}
-		// check if there are environment specific settings for the current host
+		// check if there are environment specific configurations for the current host
 		if(isset($this->config[$_SERVER['SERVER_NAME']])) {
 			$environment_config = $this->config[$_SERVER['SERVER_NAME']];
 		}
@@ -97,7 +97,7 @@ class ease_core {
 				$this->config[$key] = $value;
 			}
 		}
-		// apply any provided configuration parameters, overwriting global and environment specific configuration
+		// apply any parameter provided configurations, overwriting global and environment specific configurations
 		if(isset($params['google_token_message'])) {
 			$this->config['google_token_message'] = $params['google_token_message'];
 		}
@@ -109,7 +109,7 @@ class ease_core {
 		}
 		if(isset($params['database_password'])) {
 			$this->config['database_password'] = $params['database_password'];
-		}	
+		}
 		if(isset($params['web_basedir'])) {
 			$this->config['web_basedir'] = $params['web_basedir'];
 		}
@@ -236,8 +236,6 @@ class ease_core {
 			$this->handle_logout();
 		} elseif($request_path=='/oauth2callback') {
 			$this->handle_google_oauth2callback();
-		} elseif($request_path=='/ease/json-rpc') {
-			$this->handle_json_rpc();
 		} elseif($request_path=='/flush_spreadsheet_cache') {
 			$this->handle_flush_spreadsheet_cache();
 		} else {
@@ -342,15 +340,7 @@ class ease_core {
 		$form_handler->process();
 	}
 
-	function handle_json_rpc() {
-		// the request was for the EASE JSON-RPC handling service
-		$this->set_global_system_vars();
-		require_once 'ease/json_rpc_handler.class.php';
-		$json_rpc_handler = new ease_json_rpc_handler($this);
-		$json_rpc_handler->process();
-	}
-
-	// process requests for the Google oAuth 2.0 API callback handling service
+	// process oAuth 2.0 callback requests for the Google Drive API
 	function handle_google_oauth2callback() {
 		// load client info for the Google Apps API
 		$this->set_global_system_vars();
@@ -489,16 +479,20 @@ class ease_core {
 	function handle_flush_spreadsheet_cache() {
 		if($this->db) {
 			if($this->memcache) {
-				if($result = $this->db->query("SELECT id, name, worksheet FROM ease_google_spreadsheets;")) {
+				if($result = $this->db->query('SELECT id, name, worksheet, namespace FROM ease_google_spreadsheets;')) {
 					while($row = $result->fetch(PDO::FETCH_ASSOC)) {
 						$this->memcache->delete("system.google_spreadsheets_by_id.{$row['id']}.{$row['worksheet']}");
-						$this->memcache->delete("system.google_spreadsheets_by_name.{$row['name']}.{$row['worksheet']}");
+						if($row['namespace']!='') {
+							$this->memcache->delete("{$row['namespace']}.system.google_spreadsheets_by_name.{$row['name']}.{$row['worksheet']}");
+						} else {
+							$this->memcache->delete("system.google_spreadsheets_by_name.{$row['name']}.{$row['worksheet']}");
+						}
 					}
 				}
 			}
-			$this->db->exec("DROP TABLE IF EXISTS ease_google_spreadsheets;");
+			$this->db->exec('DROP TABLE IF EXISTS ease_google_spreadsheets;');
 		}
-		echo "Spreadsheet Cache Flush: Complete!";
+		echo 'Successfully flushed the Spreadsheet Cache';
 	}
 
 	function flush_meta_data_for_google_spreadsheet_by_id($google_spreadsheet_id, $google_spreadsheet_sheet_name='') {
@@ -508,19 +502,28 @@ class ease_core {
 			return false;
 		}
 		if($this->db) {
-			$query = $this->db->prepare("SELECT name, worksheet FROM ease_google_spreadsheets WHERE id=:id;");
+			$query = $this->db->prepare("SELECT name, worksheet, namespace FROM ease_google_spreadsheets WHERE id=:id;");
 			if($query->execute(array(':id'=>$google_spreadsheet_id))) {
 				while($row = $query->fetch(PDO::FETCH_ASSOC)) {
 					if($google_spreadsheet_sheet_name==$row['worksheet']) {
 						unset($this->google_spreadsheets_by_name[$row['name']][$row['worksheet']]);
 						if($this->memcache) {
-							$this->memcache->delete("system.google_spreadsheets_by_name.{$row['name']}.{$row['worksheet']}");
+							if($row['namespace']!='') {
+								$this->memcache->delete("{$row['namespace']}.system.google_spreadsheets_by_name.{$row['name']}.{$row['worksheet']}");
+							} else {
+								$this->memcache->delete("system.google_spreadsheets_by_name.{$row['name']}.{$row['worksheet']}");
+							}
 						}
 					} elseif($google_spreadsheet_sheet_name=='') {
 						unset($this->google_spreadsheets_by_name[$row['name']]);
 						if($this->memcache) {
-							$this->memcache->delete("system.google_spreadsheets_by_name.{$row['name']}.");
-							$this->memcache->delete("system.google_spreadsheets_by_name.{$row['name']}.{$row['worksheet']}");
+							if($row['namespace']!='') {
+								$this->memcache->delete("{$row['namespace']}.system.google_spreadsheets_by_name.{$row['name']}.");
+								$this->memcache->delete("{$row['namespace']}.system.google_spreadsheets_by_name.{$row['name']}.{$row['worksheet']}");
+							} else {
+								$this->memcache->delete("system.google_spreadsheets_by_name.{$row['name']}.");
+								$this->memcache->delete("system.google_spreadsheets_by_name.{$row['name']}.{$row['worksheet']}");
+							}
 							$this->memcache->delete("system.google_spreadsheets_by_id.$google_spreadsheet_id.{$row['worksheet']}");
 						}
 					}
@@ -639,14 +642,15 @@ class ease_core {
 			}
 			if($this->db) {
 				$query = $this->db->prepare("	REPLACE INTO ease_google_spreadsheets
-													(id, name, worksheet, meta_data_json)
+													(id, name, worksheet, meta_data_json, namespace)
 												VALUES
-													(:id, :name, :worksheet, :meta_data_json)	");
+													(:id, :name, :worksheet, :meta_data_json, :namespace)	");
 				$params = array(
 					':id'=>$google_spreadsheet_id,
 					':name'=>$google_spreadsheet_name,
 					':worksheet'=>$google_spreadsheet_sheet_name,
-					':meta_data_json'=>json_encode($meta_data)
+					':meta_data_json'=>json_encode($meta_data),
+					':namespace'=>$this->namespace
 				);
 				$result = $query->execute($params);
 				if(!$result) {
@@ -656,7 +660,8 @@ class ease_core {
 											id VARCHAR(255) NOT NULL PRIMARY KEY,
 											name TEXT NOT NULL DEFAULT '',
 											worksheet TEXT NOT NULL DEFAULT '',
-											meta_data_json TEXT NOT NULL DEFAULT ''
+											meta_data_json TEXT NOT NULL DEFAULT '',
+											namespace TEXT NOT NULL DEFAULT ''
 										);	");
 					$result = $query->execute($params);
 				}
@@ -682,7 +687,11 @@ class ease_core {
 		}
 		// meta data was not already loaded... check for it in the cache
 		if($this->memcache) {
-			$meta_data = $this->memcache->get("system.google_spreadsheets_by_name.$google_spreadsheet_name.$google_spreadsheet_sheet_name");
+			if($this->namespace!='') {
+				$meta_data = $this->memcache->get("{$this->namespace}.system.google_spreadsheets_by_name.{$google_spreadsheet_name}.{$google_spreadsheet_sheet_name}");
+			} else {
+				$meta_data = $this->memcache->get("system.google_spreadsheets_by_name.$google_spreadsheet_name.$google_spreadsheet_sheet_name");
+			}
 		} else {
 			$meta_data = false;
 		}
@@ -699,8 +708,11 @@ class ease_core {
 			// meta data for the spreadsheet was not found in the cache... check for it in any available databases
 			if($this->db) {
 				// a database is available, check for meta data for the spreadsheet
-				$query = $this->db->prepare("SELECT meta_data_json FROM ease_google_spreadsheets WHERE name=:name AND worksheet=:worksheet;");
-				if($query->execute(array(':name'=>$google_spreadsheet_name, ':worksheet'=>$google_spreadsheet_sheet_name))) {
+				$query = $this->db->prepare("	SELECT meta_data_json FROM ease_google_spreadsheets 
+												WHERE name=:name
+													AND worksheet=:worksheet
+													AND namespace=:namespace;	");
+				if($query->execute(array(':name'=>$google_spreadsheet_name, ':worksheet'=>$google_spreadsheet_sheet_name, ':namespace'=>$this->namespace))) {
 					if($row = $query->fetch(PDO::FETCH_ASSOC)) {
 						// meta data for the spreadsheet was found in the database, cornvert the JSON to an array and return it
 						$meta_data = json_decode($row['meta_data_json']);
@@ -711,7 +723,11 @@ class ease_core {
 							}
 						}
 						if($this->memcache) {
-							$this->memcache->set("system.google_spreadsheets_by_name.$google_spreadsheet_name.$google_spreadsheet_sheet_name", $meta_data);
+							if($this->namespace!='') {
+								$this->memcache->set("{$this->namespace}.system.google_spreadsheets_by_name.$google_spreadsheet_name.$google_spreadsheet_sheet_name", $meta_data);
+							} else {
+								$this->memcache->set("system.google_spreadsheets_by_name.$google_spreadsheet_name.$google_spreadsheet_sheet_name", $meta_data);
+							}
 						}
 						return $this->google_spreadsheets_by_name[$google_spreadsheet_name][$google_spreadsheet_sheet_name] = $meta_data;
 					}
@@ -751,27 +767,36 @@ class ease_core {
 				preg_match('/([A-Z]+)([0-9]+)/', $cell_title, $matches);
 				$cells_by_row_by_column_letter[$matches[2]][$matches[1]] = $cell_entry->getContent();
 			}
-			foreach($cells_by_row_by_column_letter[1] as $column_letter=>$column_name) {
-				$meta_data['column_letter_by_name'][preg_replace('/(^[0-9]+|[^a-z0-9]+)/', '', strtolower($column_name))] = $column_letter;
-				$meta_data['column_name_by_letter'][$column_letter] = preg_replace('/(^[0-9]+|[^a-z0-9]+)/', '', strtolower($column_name));
+			if(is_array($cells_by_row_by_column_letter) && count($cells_by_row_by_column_letter)>0) {
+				foreach($cells_by_row_by_column_letter[1] as $column_letter=>$column_name) {
+					$meta_data['column_letter_by_name'][preg_replace('/(^[0-9]+|[^a-z0-9]+)/', '', strtolower($column_name))] = $column_letter;
+					$meta_data['column_name_by_letter'][$column_letter] = preg_replace('/(^[0-9]+|[^a-z0-9]+)/', '', strtolower($column_name));
+				}
+			} else {
+				// TODO!! the spreadsheet is empty... add the header row and set the EASE Row ID
 			}
 			$meta_data['id'] = $google_spreadsheet_id;
 			$meta_data['name'] = $google_spreadsheet_name;
 			$meta_data['worksheet'] = $google_spreadsheet_sheet_name;
 			// store the meta data in the cache and any available database, then return the meta data
 			if($this->memcache) {
-				$this->memcache->set("system.google_spreadsheets_by_name.$google_spreadsheet_name", $meta_data);
+				if($this->namespace!='') {
+					$this->memcache->set("{$this->namespace}.system.google_spreadsheets_by_name.$google_spreadsheet_name", $meta_data);
+				} else {
+					$this->memcache->set("system.google_spreadsheets_by_name.$google_spreadsheet_name", $meta_data);
+				}
 			}
 			if($this->db) {
 				$query = $this->db->prepare("	REPLACE INTO ease_google_spreadsheets
-													(id, name, worksheet, meta_data_json)
+													(id, name, worksheet, meta_data_json, namespace)
 												VALUES
-													(:id, :name, :worksheet, :meta_data_json);	");
+													(:id, :name, :worksheet, :meta_data_json, :namespace);	");
 				$params = array(
 					':id'=>$google_spreadsheet_id,
 					':name'=>$google_spreadsheet_name,
 					':worksheet'=>$google_spreadsheet_sheet_name,
-					':meta_data_json'=>json_encode($meta_data)
+					':meta_data_json'=>json_encode($meta_data),
+					':namespace'=>$this->namespace
 				);
 				$result = $query->execute($params);
 				if(!$result) {
@@ -781,7 +806,8 @@ class ease_core {
 											id VARCHAR(255) NOT NULL PRIMARY KEY,
 											name TEXT NOT NULL DEFAULT '',
 											worksheet TEXT NOT NULL DEFAULT '',
-											meta_data_json TEXT NOT NULL DEFAULT ''
+											meta_data_json TEXT NOT NULL DEFAULT '',
+											namespace TEXT NOT NULL DEFAULT ''
 										);	");
 					$result = $query->execute($params);
 				}
@@ -1064,13 +1090,26 @@ class ease_core {
 	}
 
 	function set_global_system_vars() {
+		$this->globals['system.core'] = 'PHP';
+		$this->globals['system.session_id'] = session_id();
 		$this->globals['system.domain'] = $_SERVER['SERVER_NAME'];
 		$this->globals['system.name'] = &$this->globals['system.domain'];
 		$this->globals['system.host'] = $_SERVER['HTTP_HOST'];
 		$this->globals['system.http_host'] = 'http' . ((isset($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS'])=='on') ? 's' : '') . '://' . $_SERVER['HTTP_HOST'];
 		$this->globals['system.https_host'] = 'http' . (($_SERVER['SERVER_NAME']!='localhost') ? 's' : '') . '://' . $_SERVER['HTTP_HOST'];
 		$this->globals['system.host_url'] = &$this->globals['system.http_host'];
-		$this->globals['system.core'] = 'PHP';
+		if(isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER']!='') {
+			$this->globals['system.referrer'] = $_SERVER['HTTP_REFERER'];
+			$referrer_parts = parse_url($this->globals['system.referrer']);
+			$this->globals['system.referring_host'] = $referrer_parts['host'] . ((isset($referrer_parts['port']) && $referrer_parts['port']!='') ? ':' . $referrer_parts['port'] : '');
+			$this->globals['system.referring_host_url'] = $referrer_parts['scheme'] . '://' . $this->globals['system.referring_host'];
+			$this->globals['system.https_referring_host'] = 'http' . (($referrer_parts['host']!='localhost') ? 's' : '') . '://' . $this->globals['system.referring_host'];
+		} else {
+			$this->globals['system.referrer'] = '';
+			$this->globals['system.referring_host'] = '';
+			$this->globals['system.referring_host_url'] = '';
+			$this->globals['system.https_referring_host'] = '';
+		}
 		$this->globals['system.timestamp'] = $_SERVER['REQUEST_TIME'];
 		if(isset($_SERVER['REQUEST_TIME_FLOAT'])) {
 			$this->globals['system.timestamp_float'] = $_SERVER['REQUEST_TIME_FLOAT'];

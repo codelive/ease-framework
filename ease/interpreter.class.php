@@ -91,10 +91,18 @@ class ease_interpreter {
 						$value = $_REQUEST[$key];
 					}
 				} elseif($bucket=='config') {
-					$value = @$this->core->config[$key];
+					if(!$this->core->inject_config_disabled) {
+						$value = @$this->core->config[$key];
+					} else {
+						$value = '';
+					}
 				} elseif($bucket=='cache') {
 					if($this->core->memcache) {
-						$value = $this->core->memcache->get($key);
+						if($this->core->namespace!='') {
+							$value = $this->core->memcache->get("{$this->core->namespace}.{$key}");
+						} else {
+							$value = $this->core->memcache->get($key);
+						}
 					} else {
 						$value = '';
 					}
@@ -117,9 +125,15 @@ class ease_interpreter {
 				} elseif($this->core->memcache && (($value = $this->core->memcache->get($name))!==false)) {
 					// this is tricky code to save memory on large cached objects
 					// $value was already set with the value from the cache... done
-				} elseif(isset($this->core->globals['.' . $name])) {
-					$value = $this->core->globals['.' . $name];
-				} elseif($this->core->memcache && (($value = $this->core->memcache->get('.' . $name))!==false)) {
+				} elseif($this->core->namespace!='' && $this->core->memcache && (($value = $this->core->memcache->get("{$this->core->namespace}.{$name}"))!==false)) {
+					// this is tricky code to save memory on large cached objects
+					// $value was already set with the value from the cache... done
+				} elseif(isset($this->core->globals[".{$name}"])) {
+					$value = $this->core->globals[".{$name}"];
+				} elseif($this->core->memcache && (($value = $this->core->memcache->get(".{$name}"))!==false)) {
+					// this is tricky code to save memory on large cached objects
+					// $value was already set with the value from the cache... done
+				} elseif($this->core->namespace!='' && $this->core->memcache && (($value = $this->core->memcache->get("{$this->core->namespace}..{$name}"))!==false)) {
 					// this is tricky code to save memory on large cached objects
 					// $value was already set with the value from the cache... done
 				} else {
@@ -718,6 +732,7 @@ class ease_interpreter {
 							$string = '€ ' . number_format(round(preg_replace('/[^0-9\.-]+/', '', $string), 2), 2, ',', '.');
 							break;
 						case 'number':
+						case 'numeric':
 						case 'decimal':
 						case 'float':
 						case 'long':
