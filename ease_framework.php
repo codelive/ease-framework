@@ -3,7 +3,7 @@
      * Plugin Name: EASE Framework
      * Plugin URI: http://www.cloudward.com
      * Description: A plugin that makes it easy to generate forms and lists using EASE syntax and Google Spreadsheets
-     * Version: 0.1.3
+     * Version: 0.1.4
      * Author: Cloudward
      * Author URI: http://www.cloudward.com
      * License: GPLv2 or later
@@ -344,7 +344,7 @@
             $this_content = $ease_core->process_ease($content,true);
             echo $this_content;
         }else{
-            echo $content;
+            return $content;
         }
         if($_POST['ease_form_id']){   
             ob_flush();

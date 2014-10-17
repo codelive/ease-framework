@@ -90,6 +90,9 @@ The EASE Framework connects to your local database. If your hosting provider loc
 = 0.1.3 =
 * Updated membership helper script
 
+= 0.1.4 =
+* Fixed an issue where content was echoing instead of returning when EASE was not being run
+
 == Upgrade Notice ==
 
 = 0.1.3 =
