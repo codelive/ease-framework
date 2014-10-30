@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 namespace Google\Spreadsheet;
 
 /**
@@ -129,7 +130,7 @@ class CellEntry extends \ArrayIterator
 		$entry = '
 			<entry xmlns="http://www.w3.org/2005/Atom"
 				xmlns:gs="http://schemas.google.com/spreadsheets/2006">
-			  <gs:cell row="' . $loc['row'] . '" col="' . $loc['col'] . '" inputValue="' . $this->cellValue . '"/>
+			  <gs:cell row="' . $loc['row'] . '" col="' . $loc['col'] . '" inputValue="' . htmlspecialchars($this->cellValue, ENT_COMPAT | ENT_XML1, 'UTF-8') . '"/>
 			</entry>
 		';
 		$serviceRequest->getRequest()->setFullUrl($this->postUrl);

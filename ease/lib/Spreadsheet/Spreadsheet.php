@@ -14,6 +14,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 */
+
 namespace Google\Spreadsheet;
 
 /**
@@ -78,7 +79,7 @@ class Spreadsheet {
 		$entry = '
 			<entry xmlns="http://www.w3.org/2005/Atom"
 			xmlns:gs="http://schemas.google.com/spreadsheets/2006">
-			<title>'. $title .'</title>
+			<title>' . htmlspecialchars($title, ENT_COMPAT | ENT_XML1, 'UTF-8') . '</title>
 			<gs:rowCount>'. $rowCount .'</gs:rowCount>
 			<gs:colCount>'. $colCount .'</gs:colCount>
 			</entry>

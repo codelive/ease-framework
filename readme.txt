@@ -34,9 +34,11 @@ Easily integrate your existing WordPress app:
 
 
 See what you can do with EASE:
+
 * At our demo site http://www.momsbakeryonline.com
 * Watch this video to see how easy it is to get started: https://www.youtube.com/watch?v=FhJv-GYYJPM
 * How to Build a Memberships Site: http://youtu.be/raLWG86tYEo
+
 
 How EASE Works:
 
@@ -93,8 +95,11 @@ The EASE Framework connects to your local database. If your hosting provider loc
 = 0.1.4 =
 * Fixed an issue where content was echoing instead of returning when EASE was not being run
 
+= 0.1.5 =
+* Updates for welcome and settings screens to improve usability
+
 == Upgrade Notice ==
 
-= 0.1.3 =
-The new version contains bug fixes and new helper scripts. Helper Scripts are example application pages written in
+= 0.1.5 =
+Added new Setup wizard. The new version contains bug fixes and new helper scripts. Helper Scripts are example application pages written in
 EASE. Scripts include: surveys, contacts, Membership site, PayPal Store, File Uploads and more.

@@ -3,7 +3,7 @@
      * Plugin Name: EASE Framework
      * Plugin URI: http://www.cloudward.com
      * Description: A plugin that makes it easy to generate forms and lists using EASE syntax and Google Spreadsheets
-     * Version: 0.1.4
+     * Version: 0.1.5
      * Author: Cloudward
      * Author URI: http://www.cloudward.com
      * License: GPLv2 or later
@@ -54,7 +54,9 @@
         add_filter('admin_footer_text', 'ease_remove_footer_admin');
         
         add_action( 'admin_footer', 'ease_disable_html_editor_wps' );
-        
+        if($_REQUEST['page'] == "ease_plugin_settings" || $_REQUEST['page'] == "ease_landing_page"){
+            add_action( 'admin_footer', 'ease_drive_settings_modal_div');
+        }
         add_filter( 'wp_default_editor', create_function('', 'return "html";') );
         
         
@@ -66,6 +68,7 @@
         
         add_action('wp_ajax_ease_add_new_page', 'easeAddNewPage');
         add_action( 'add_meta_boxes', 'adding_custom_ease_meta_boxes', 10, 2 );
+        add_action( 'wp_ajax_save_ease_settings_modal_values', 'save_ease_settings_modal_values' );
         add_action( 'save_post', 'ease_save_meta_box_data' );
         
         register_activation_hook( __FILE__, 'ease_plugin_activate' );
@@ -136,7 +139,9 @@
      *
     */
     function ease_admin_load_js_scripts(){
-        wp_enqueue_script('ease_my_script', plugins_url( 'script_helper.js' , __FILE__ ),array(),"0.1.3.758366");
+        wp_enqueue_script('ease_my_script', plugins_url( 'script_helper.js' , __FILE__ ),array(),"0.1.5.821398");
+        wp_enqueue_script('ease_my_script1', plugin_dir_url( __FILE__ ) . "static/js/tabslet/jquery.tabslet-custom.js","","",true);
+        wp_enqueue_script('ease_my_script2', plugin_dir_url( __FILE__ ) . "static/js/jquery-validation/validation-1.13.0/dist/jquery.validate.js","","",true);
     }
     
     /**
@@ -205,7 +210,7 @@
         </script>';
         add_thickbox();
         echo '<span style="display:none;">
-        <a href="#TB_inline?width=75%&height=75%&inlineId=script-helper-div" title="EASE Script Helper" id="script-helper-modal-link" class="thickbox"></a>
+        <a href="#TB_inline?width=1000&height=750&inlineId=script-helper-div" title="EASE Script Helper" id="script-helper-modal-link" class="thickbox"></a>
         </span>
         <div id="script-helper-div" style="display:none;">
             <i>Note: Once you add an EASE Script, the visual editor in Wordpress for the page will automatically be disabled</i><BR><BR><link rel="stylesheet" href="//code.jquery.com/ui/1.11.0/themes/smoothness/jquery-ui.css">
@@ -309,40 +314,16 @@
             $content = str_replace("&lt;#","<#",$content);
             $content = str_replace("#&gt;","#>",$content);
             
-            $content = preg_replace_callback(
-                                 '/<#\s*include\s*("|\')(.*?)("|\')\s*[\.;]{0,1}\s*#>/is',
-                                 function($matches) use ($content){
-                                 
-                                 $temp_url_array = get_option("ease_replace_urls");
-                                 $espx_page = str_replace(".espx","",$matches[2]);
-                                 $post_id = $temp_url_array[$espx_page];
-                                 $post_object = get_post($post_id);
-                                 return $post_object->post_content;
-                                 },
-                                 $content
-                                 );
-            
-            // If there is an email includes in here, parse them out and run them
-           $content = preg_replace_callback(
-                                 '/bodypage\s*=\s*"(.*?)"\s*;/is',
-                                 function($matches) use ($content){
-                                    $url = parse_url($matches[0]);
-
-                                    //$url = str_replace("bodypage = \"","",$url['path']);
-                                    $url = preg_replace('/(bodypage\s*=\s*")/',"", $url['path']); 
-                                    $replace_urls1 = get_option( "ease_replace_urls");
-
-                                    $post = get_post($replace_urls1[$url]);
-                                    $ease_core1 = ease_load_core();
-                                    return "body=\"" .replace_ease_urls($ease_core1->process_ease($post->post_content,true)) . "\";";
-                                 },
-                                 $content
-                                 );
-            
-            //if(!preg_match('/(.*?)(<#\s*([^\s\[\'"].*|$))/i', $body_line)) {
-            $content = replace_ease_urls($content);
-            $this_content = $ease_core->process_ease($content,true);
-            echo $this_content;
+            if(version_compare(PHP_VERSION, '5.4.0')<0) {
+                echo "<B>You need to be running a version of PHP greater than 5.4.0 for this plugin to work</b><BR><BR>";
+                echo $content;
+            }else{
+                require_once('ease_content_replace.php');
+                //if(!preg_match('/(.*?)(<#\s*([^\s\[\'"].*|$))/i', $body_line)) {
+                $content = replace_ease_urls($content);
+                $this_content = $ease_core->process_ease($content,true);
+                echo $this_content;
+            }
         }else{
             return $content;
         }
@@ -423,18 +404,17 @@
             $endpoint_page_id = get_option('ease_service_endpoint_page');
         }
         
-
         ?>
         <script type="text/javascript">
             function loadProjectSetup() {
-                var project_id = jQuery("#ease_project_id").val().trim();
+                var project_id = jQuery("#ease_project_id_modal").val().trim();
                 
                 if (project_id.indexOf(" ") > 0) {
                     alert("Your project name cannot have spaces");
                     return false;
                 }
-                jQuery("#drive_api_setup").attr("href", "https://cloud.google.com/console/project/apps~" + project_id + "/apiui/api?show=all");
-                jQuery("#client_id_setup").attr("href", "https://cloud.google.com/console/project/apps~" + project_id + "/apiui/credential");
+                jQuery(".drive_api_setup").attr("href", "https://cloud.google.com/console/project/apps~" + project_id + "/apiui/api?show=all");
+                jQuery(".client_id_setup").attr("href", "https://cloud.google.com/console/project/apps~" + project_id + "/apiui/credential");
                 jQuery(".consent_screen_setup").attr("href","https://console.developers.google.com/project/apps~" + project_id + "/apiui/consent");
                 jQuery("#project_setup").show();
             }
@@ -482,23 +462,100 @@
               margin: 0em;
             }
         </style>
-        <div class="wrap">
-            <h2>EASE Plugin Settings</h2>
-            <form method="post" action="options.php">
-            <?php settings_fields( 'easeoption-group' );
-            do_settings_sections( 'easeoption-group' );
+        <script type="text/javascript">
+        function closeEaseSettingsModal(){
+           
+            tb_show('', '#TB_inline?height=300&width=300&inlineId=confirmDiv&modal=false');
+            jQuery('#TB_window').css({'border':'0px', 'background':'none'});
+            jQuery('#TB_window').hide();
+            jQuery('#TB_overlay').css({'background':'transparent'});
+            jQuery('link[title="cloudward_static_style"]').prop('disabled', 'disabled');
+            //jQuery('link[title="cloudward_static_style"]').remove();
             
+        }
+        function loadEASESettingsWindow(modal_name,modal_title){
+            loadProjectSetup();
+            jQuery(".prev").hide();
+            jQuery('link[title="cloudward_static_style"]').prop('disabled', false);
+            //jQuery('link[title="cloudward_static_style"]').add();
+            tb_show(modal_title,'#TB_inline?width=1000&amp;height=750&amp;inlineId=' + modal_name);
+            jQuery('#TB_closeAjaxWindow').html('<a onclick=\'closeEaseSettingsModal();\'><div class=\'tb-close-icon\'></div></a>');
+            
+            jQuery("#cwFormID").validate();
+            jQuery('.tabs').tabslet({
+                controls: {
+                        prev: '.prev',
+                        next: '.next'
+                }
+            });
+            
+        }
+        </script>
+        <div class="wrap">
+            <style>
+                .wp-well {
+                    min-height: 20px;
+                    padding: 19px;
+                    background-color: #f5f5f5;
+                    border: 1px solid #e3e3e3;
+                    border-radius: 4px;
+                    -webkit-box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.05);
+                    box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.05);
+                  }
+            </style>
+            <h2><div align="center">Cloudward EASE Framework Settings</div></h2>
+            <span>
+                <a onclick="loadWelcomeWindow();" title="" id="welcome-modal-link" name="welcome-modal-link" class="thickbox">View EASE Framework Welcome Page for getting started hints</a>
+            </span>
+            <form method="post" action="options.php">
+            <?php settings_fields( 'easeoption-group1' );
+            do_settings_sections( 'easeoption-group1' );
+            
+            $notify_items_string = "";
             if(!get_post($endpoint_page_id)){
-                echo '<B><a href="admin.php?page=create_ease_endpoint_page">Your EASE handler page is missing, click here to regenerate it</a></B>';
+                $notify_items_string .= '<B><a href="admin.php?page=create_ease_endpoint_page">&nbsp;&nbsp;&nbsp;Your EASE handler page is missing, click here to regenerate it</a></B>';
             }
+            
+            if(!get_option('ease_gapp_client_id') || !get_option('ease_gapp_client_secret')){
+                if($notify_items_string){
+                    $notify_items_string .= "<BR>";
+                }
+                
+                $notify_items_string .= '<B>&nbsp;&nbsp;&nbsp;You have not completed your Google Settings</B>';
+            }
+            
+            $created_ease_page = false;
+            
+            if(is_array($ease_page_array)){
+                foreach($ease_page_array as $key=>$value){
+                    if($key && $value){
+                        $created_ease_page = true;
+                    }
+                }
+            }
+            
+            if(!$created_ease_page){
+                 if($notify_items_string){
+                    $notify_items_string .= "<BR>";
+                }
+                
+               // $notify_items_string .= '<B>&nbsp;&nbsp;&nbsp;You have not created an EASE page</B>';               
+            }
+            
+            if($notify_items_string){
+                echo "<BR><B><div class='wp-well'>Notifications:</B><BR>" . $notify_items_string . "</div><BR>";
+            }
+            
+            echo "<div class='wp-well'><B>EASE Helper Scripts:</B><BR><a onclick='loadScriptHelper(this.value)'>&nbsp;&nbsp;&nbsp;Create EASE Page and Collections or see EASE Code examples</a>:<BR>&nbsp;&nbsp;&nbsp;Pages include: Members website, contacts, surveys, store and more</div> <BR>";
+            $ease_page_array = get_option('ease_replace_urls');
+            
+
             ?>
-            <h4>Settings to get your EASE Plugin just the way you imagined it</h4>
             
             <?php
-                $php_version = phpversion();
-                
-                if(version_compare($php_version,"5.3.0","<")){
-                    echo "<B>You need to be running a version of PHP greater than 5.3.0 for this plugin to work</b>";
+                if(version_compare(PHP_VERSION, '5.4.0')<0) {
+                    echo "<B>You need to be running a version of PHP greater than 5.4.0 for this plugin to work</b>";
+                    exit;
                 }
     
                 $ease_disable_db_access = "";
@@ -508,146 +565,21 @@
                 }
             ?>
             <div class="sitedbsection">
-                            <p class="expand-one"><a onclick="toogleDbSettings();"><h3>Plugin Settings >></h3></a></p>
-                            <div class="content-db-one plugin-settings" style="display:none">
-                            <table class="form-table">
-                            <tr valign="top">
-                            <th scope="row">Disable Database Access</th>
-                            <td><input type="checkbox" name="ease_disable_db_access" id="ease_disable_db_access" <?php echo $ease_disable_db_access; ?> /></td>
-                            </tr>
-                            <tr valign="top">
-                            <th scope="row">Database Name (if you do not want to use the default Wordpress database)</th>
-                            <td><input type="text" name="ease_db_name" value="<?php echo get_option('ease_db_name'); ?>" /></td>
-                            </tr>
-                            <tr valign="top">
-                            <th scope="row">Recreate EASE Handler Page (if you accidentally deleted it)</th>
-                            <td><a href="admin.php?page=create_ease_endpoint_page">Regenerate</a></td>
-                            </tr>
-                            <tr valign="top">
-                            <th scope="row" colspan="2" style="margin:0px;padding:0px"><i><h5>The handler pages processes all your EASE forms, uploads, etc.  Without it, EASE won't work!</h5></i></th>
-                            </tr>
-                            <!--  <tr valign="top">
-                            <th scope="row" colspan="2">External Database Settings (optional: if you do not want to use the database on this server)</th>
-                            </tr>
-                            <tr valign="top">
-                            <th scope="row">Database Host</th>
-                            <td><input type="text" name="ease_external_db_hostname" value="<?php echo get_option('ease_external_db_hostname'); ?>" /></td>
-                            </tr>
-                            <tr valign="top">
-                            <th scope="row">Username</th>
-                            <td><input type="text" name="ease_external_db_user" value="<?php echo get_option('ease_external_db_user'); ?>" /></td>
-                            </tr>
-                            <tr valign="top">
-                            <th scope="row">Password</th>
-                            <td><input type="password" name="ease_external_db_password" value="<?php echo get_option('ease_external_db_password'); ?>" /></td>
-                            </tr>-->
-                            </table>
-                            </div>
+                            <p class="expand-one"><a onclick="loadEASESettingsWindow('plugin-settings-modal','EASE Plugin Properties');return false;" href="#"><h3>EASE Plugin Properties</a> - <a onclick="loadEASESettingsWindow('plugin-settings-modal','EASE Plugin Properties');return false;" href="#" class="button" style="vertical-align: middle">Setup</h3></h3></a></p>
+                            
             </div>
-            <div class="sitesection">
                 <?php
-                $endpoint_url = site_url() . "/?page_id=" . $endpoint_page_id . "&endpoint=oauth2callback";
-                
-                $endpoint_url_ssl = str_replace("http://","https://",$endpoint_url);
-            
+        
                 $drive_active = "";
                 
                 if(get_option('ease_google_drive_active')){
                     $drive_active = "checked=checked";
                 }
+                
                 ?>
-                            <p class="expand-one"><h3><input type="checkbox" id="ease_google_drive_active" name="ease_google_drive_active" <?php echo $drive_active; ?>><a onclick="toogleGoogleSettings();">Activate Google Settings >></a></h3>(To activate connectivity to Google Drive, Sheets and Docs)</p>
-                            <div class="content-one plugin-settings" style="display:none">
-                                <table class="form-table">
-                                                <tr valign="top">
-                                                    <th colspan="2">To enable access to Google Drive, you need to configure your Google Drive security settings:
-                                                        <B><BR></B>
-                                                        <p class="mt20">
-                                                        <ol><B>Step 1 of 3 - Create a Google Project to enable the API</B><BR><BR>
-                                                        <blockquote><li>Login to your Google account</li>
-                                                        <li>Go to <a target="_blank" href="http://cloud.google.com/console">http://cloud.google.com/console</a> - if the "New Project" window doesn't show, then click New Project</li>
-                                                        <li>Enter a project name and ID for your project. The project is required by Google for access to Google. </li>
-                                                        <li>Enter your Project ID below
-                                                        <p><input type="text" id="ease_project_id" name="ease_project_id" value="<?php echo get_option('ease_project_id'); ?>" /></p></li>
-                                                        </blockquote>
-                                                        <p>Click <a onclick="loadProjectSetup();">Next >></a></p>
-                                                        <div id="project_setup" name="project_setup" style="display: none">
-                                                            <B>Step 2 of 3 - Enable the API<BR><BR></B>
-                                                            <blockquote><li>Now <a id="drive_api_setup" target="_blank">Click here</a> and set the Drive API to "ON"</li></blockquote>
-                                                            <B><BR>Step 3 of 3 - Create your Client ID<BR><i>The Client ID is used to authenticate your Wordpress site to Google Drive</i><BR><BR></B>
-                                                            <blockquote><li><a id="client_id_setup" target="_blank">Click here</a> and select the option CREATE CLIENT ID</li>
-                                                            <p>Fill out the form as follows<BR><BR>
-                                                            Application type: Web Application <BR><BR>In the FIRST, Authorized Javascript Origins box, put these values in:<BR><BR>
-                                                            <textarea id="javascript_origins" rows=5 cols=60><?php echo "http://" . $_SERVER['HTTP_HOST']; ?>&#13;&#10;<?php echo "https://" . $_SERVER['HTTP_HOST']; ?></textarea>
-                                                            </p>
-                                                            <p>In the SECOND box, Authorized Redirect URI, put these values in:<BR><BR>
-                                                            <textarea id="redirect_uris" rows=5 cols=60><?php echo $endpoint_url; ?>&#13;&#10;<?php echo $endpoint_url_ssl; ?></textarea>
-                                                            </p>
-                                                            </li>
-                                                            <li>Now, click the CREATE CLIENT ID button and enter the CLIENT ID and CLIENT SECRET from the "CLIENT ID for web application section" below<BR><BR></li>
-                                                            <li>Set the <a class="consent_screen_setup" target="_blank">consent screen</a> name and email<BR><BR>
- 
-                                                            For your app to authorize access to Google Drive, your <a class="consent_screen_setup" target="_blank">consent screen</a> needs to have a Product Name and Email address.  The <a class="consent_screen_setup" target="_blank">consent screen</a> will be shown to users whenever your application requests access to their private data using your client ID.
-                                                            </blockquote>
-                                                        </div>
-                                                        </ol>
-                                                        </p>
-                                                    </th>
-                                                </tr>
-                                                <tr valign="top">
-                                                <th scope="row">Google App Client ID</th>
-                                                <td><input type="text" name="ease_gapp_client_id" value="<?php echo get_option('ease_gapp_client_id'); ?>" /></td>
-                                                </tr>
-                                                 
-                                                <tr valign="top">
-                                                <th scope="row">Google App Client Secret</th>
-                                                <td><input type="text" name="ease_gapp_client_secret" value="<?php echo get_option('ease_gapp_client_secret'); ?>" /></td>
-                                                </tr>
-
-                                                <tr valign="top" style="padding:0px">
-                                                    <th colspan="2" style="padding:0px"><h4>Google Drive Upload Code Examples</h4></th>
-                                                </tr>
-                                                <tr valign="top">
-                                                    <th colspan="2">
-                                                    Upload a file to your Google Drive by putting this code on a page:<BR>
-                                                    <pre style="background-color:#FFFFFF;padding:10px">
-&lt;# set var.uploads_folder_id to public folder id by name "EASE-BAT File Uploads"; #&gt;
-&lt;# start form for files &lt;#[url.edit]#&gt;;#&gt;
-Upload to Drive: &lt;input type="file" &lt;# upload file to googledrive "/&lt;#[var.uploads_folder_id]#&gt;" for files.file #&gt; /&gt;&lt;br /&gt;
-&lt;input type="button" &lt;# Create button #&gt; /&gt;
-&lt;# end form #&gt;</pre><BR>
-List your public files in Google Drive like so:
-
-<pre style="background-color:#FFFFFF;padding:10px">&lt;# start list for files; #&gt;
-
-&lt;# start header #&gt;
-&lt;table border='1' cellpadding='2' cellspacing='0'&gt;
-&lt;tr&gt;
-&lt;th&gt;File&lt;/th&gt;
-&lt;/tr&gt;
-&lt;# end header #&gt;
-
-&lt;# start row #&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;img src="&lt;# file_drive_web_url #&gt;" /&gt;&lt;/td&gt;
-&lt;/tr&gt;
-&lt;# end row #&gt;
-
-&lt;# start footer #&gt;
-&lt;/table&gt;
-&lt;# end footer #&gt;
-
-&lt;# no results #&gt;
-&lt;hr /&gt;No Results
-&lt;# end no results #&gt;
-
-&lt;# end list #&gt;</pre>
-                                                    </th>
-                                                </tr>
-                                </table>
-                            </div>
+            <div class="sitesection">
+                            <p class="expand-one"><h3 style="margin:0px"><input type="checkbox" id="ease_google_drive_active" name="ease_google_drive_active" <?php echo $drive_active; ?>><a onclick="loadEASESettingsWindow('google-settings-modal','Google Drive Settings');return false;">&nbsp;&nbsp;&nbsp;Enable Google Drive Access - </a><a onclick="loadEASESettingsWindow('google-settings-modal','Google Drive Settings');return false;" class="button" style="vertical-align:middle">Setup</a></h3>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(To activate connectivity to Google Drive, Sheets and Docs)</p>
             </div>
-
             <?php
             
                 $s3_upload_active = "";
@@ -656,112 +588,12 @@ List your public files in Google Drive like so:
                     $s3_upload_active = "checked=checked";
                 }
                 ?>
+            <h3>File Upload/Download Options (pick one)</h3>
             <div class="siteawssection">
-                            <p class="expand-one"><h3><input type="checkbox" onclick="easeUploadSelectCheck('amazon');" id="ease_s3_active" name="ease_s3_active" <?php echo $s3_upload_active; ?>><a onclick="toogleAwsSettings();">Activate Amazon Settings >></a></h3> (Activate Upload/Downloads to Amazon S3 rather than your hosting site's folder)</p>
-                            <div class="content-aws-one plugin-settings" style="display:none">
-                            <table class="form-table">
-                                <tr valign="top" style="padding:0px">
-                                    <th colspan="2" style="padding:0px"><h3>Optional - Amazon Upload Settings</h3></th>
-                                </tr>
-                                <tr valign="top">
-                                    <th colspan="2">To upload files to Amazon S3 instead or in addition to uploading to Google Drive, you can follow these instructions to create your S3 Access keys to be used by EASE:
-                                    <ol>
-                                        <li>Create an account at <a href="http://aws.amazon.com" target="_blank">aws.amazon.com</a></li>
-                                    <li><p><a onclick="toogleBucketSettings();">Create upload buckets (optional) >></a></p>
-                                    <span class="content-bucket-one" style="display:none">
-                                        <p>You can specify buckets to upload to, but if you don't we will create the buckets automatically</p>
-                                        <p>Go to <a href="https://console.aws.amazon.com/s3" target="_blank">https://console.aws.amazon.com/s3</a> and click Create Bucket</p>
-                                        <p>Type the public bucket name here:<BR>
-                                            <input type="text" name="ease_s3_bucket_public" value="<?php echo get_option('ease_s3_bucket_public'); ?>" />
-                                        </p>
-                                        <p>After you create that bucket, do it again and type private bucket name here:<BR>
-                                            <input type="text" name="ease_s3_bucket_private" value="<?php echo get_option('ease_s3_bucket_private'); ?>" />
-                                        </p>
-                                    </span></li>
-                                    <li>Go to <a href="https://console.aws.amazon.com/iam/home?#users" target="_blank">https://console.aws.amazon.com/iam/home?#users</a> and click Create New Users</li>
-                                    <li>Type in a random username</li>
-                                    <li>Click Create</li>
-                                    <li>Click Show Security Credentials</li>
-                                    <li>Enter the credentials displayed in the previous step below
-                                    <p>Amazon S3 Access Key ID<BR>
-                                    <input type="text" name="ease_s3_access_key" value="<?php echo get_option('ease_s3_access_key'); ?>" />
-                                    </p>
-                                    <p>Amazon S3 Secret Access Key<BR>
-                                    <input type="text" name="ease_s3_secret_access_key" value="<?php echo get_option('ease_s3_secret_access_key'); ?>" />
-                                    </p>
-                                    </li>
-                                    <li>For the created user, click on that user in IAM</li>
+                            <p class="expand-one"><h3 style="margin:0px"><input type="checkbox" onclick="easeUploadSelectCheck('amazon');" id="ease_s3_active" name="ease_s3_active" <?php echo $s3_upload_active; ?>><a onclick="loadEASESettingsWindow('amazon-settings-modal','Amazon Settings');return false;">&nbsp;&nbsp;&nbsp;Enable upload/downloads to Amazon S3</a> - <a onclick="loadEASESettingsWindow('amazon-settings-modal','Amazon Settings');return false;" class="button" style="vertical-align:middle">Setup</a></h3>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Activate Upload/Downloads to Amazon S3 rather than your hosting site's folder)</p>
 
-                                    <p>
-                                        Once the user is created, click on that user
-                                    </p>
-                                    <li>At the bottom, click permissions</li>
-                                    <li>Click Attach User Policy
-                                    <p>Select Custom Policy, and click Select</p></li>
-                                    <li>Type in any name for the policy name</li>
-                                    <li>In the Policy Document, copy and paste the following text:<BR>
-                                    <textarea  rows=5 cols=60>{
-                                    "Version": "2012-10-17",
-                                    "Statement": [
-                                      {
-                                        "Sid": "Stmt1404711211000",
-                                        "Effect": "Allow",
-                                        "Action": [
-                                          "s3:*"
-                                        ],
-                                        "Resource": [
-                                          "*"
-                                        ]
-                                      }
-                                    ]
-                                  }</textarea>
-                                    </p>
-                                    <p>Click Apply Policy</p>
-                                    <p>You can now access your S3 bucket through EASE!</p>
-                                    </li>
-                                    </ol>
-                                    </th>
-                                </tr>
-                                <tr valign="top" style="padding:0px">
-                                    <th colspan="2" style="padding:0px"><h4>Amazon Code Examples</h4></th>
-                                </tr>
-                                <tr valign="top">
-                                    <th colspan="2">
-                                    Upload a public file to Amazon S3 by putting this code on a page:<BR>
-                                    <pre style="background-color:#FFFFFF;padding:10px">&lt;# start form for public_files &lt;#[url.edit]#&gt;;#&gt;
-#&gt;
-File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
-&lt;input type="button" &lt;# Create button #&gt; /&gt;
-&lt;# end form #&gt;</pre><BR>
-                                    List your public files in Amazon S3 like so:<BR>
-                                                                        <pre style="background-color:#FFFFFF;padding:10px">&lt;# start list for public_files; #&gt;
-
-&lt;# start header #&gt;
-&lt;table border='1' cellpadding='2' cellspacing='0'&gt;
-&lt;tr&gt;
-&lt;th&gt;File Name&lt;/th&gt;
-&lt;th&gt;Web URL as HREF in IMG tag&lt;/th&gt;
-&lt;/tr&gt;
-&lt;# end header #&gt;
-
-&lt;# start row #&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;# file as html #&gt;&lt;/td&gt;
-&lt;td&gt;&lt;img src="&lt;# file_web_url #&gt;" /&gt;&lt;/td&gt;
-&lt;/tr&gt;
-&lt;# end row #&gt;
-
-&lt;# start footer #&gt;
-&lt;/table&gt;
-&lt;# end footer #&gt;
-
-&lt;# end list #&gt;</pre>
-                                    </th>
-                                </tr>
-                            </table>
-                    </div>
-    </div>
-                        <div class="siteuploadsection">
+            </div>
+            <div class="siteuploadsection">
                 <?php
                 
                 $plugin_dir = plugin_dir_path( __FILE__ );
@@ -798,60 +630,8 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
                     $local_upload = "checked=checked";
                 }
                 ?>
-                            <p class="expand-one"><h3><input type="checkbox" onclick="easeUploadSelectCheck('local');" id="ease_local_upload_active" name="ease_local_upload_active" <?php echo $local_upload; ?>><a onclick="toogleUploadDirSettings();">Activate Upload Folders >></a></h3>(Activate uploads/downloads to your hosted sites folder)</p>
-                            <div class="content-upload-dir-one plugin-settings" style="display:none">
-                            <table class="form-table">
-                            <tr valign="top">
-                            <th scope="row">Public Folder<?php if(!is_dir($public_dir)){
-                                echo "<BR>Could not create/locate public directory, you may want to use Amazon or Google Drive for Uploads<BR>";   
-                            } ?></th>
-                            <td><input type="text" name="ease_public_folder_upload_directory" value="<?php echo $public_dir ?>" /></td>
-                            </tr>
-                            <tr valign="top">
-                            <th scope="row">Private Folder
-                            </th>
-                            <td><?php if(!is_dir($private_dir)){
-                                echo "<BR>Could not create/locate private directory, you may want to use Amazon or Google Drive for Uploads<BR>";   
-                            } ?><BR><input type="text" name="ease_private_folder_upload_directory" value="<?php echo $private_dir ?>" /></td>
-                            </tr>
-                                <tr valign="top" style="padding:0px">
-                                    <th colspan="2" style="padding:0px"><h4>Code Examples</h4></th>
-                                </tr>
-                                <tr valign="top">
-                                    <th colspan="2">
-                                    Upload a file to your server by putting this code on a page:<BR>
-                                    <pre style="background-color:#FFFFFF;padding:10px">&lt;# start form for public_files &lt;#[url.edit]#&gt;;#&gt;
-File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
-&lt;input type="button" &lt;# Create button #&gt; /&gt;
-&lt;# end form #&gt;</pre><BR>
-                                    List your public files on your server like so:<BR>
-                                                                        <pre style="background-color:#FFFFFF;padding:10px">&lt;# start list for public_files; #&gt;
-
-&lt;# start header #&gt;
-&lt;table border='1' cellpadding='2' cellspacing='0'&gt;
-&lt;tr&gt;
-&lt;th&gt;File Name&lt;/th&gt;
-&lt;th&gt;Web URL as HREF in IMG tag&lt;/th&gt;
-&lt;/tr&gt;
-&lt;# end header #&gt;
-
-&lt;# start row #&gt;
-&lt;tr&gt;
-&lt;td&gt;&lt;# file as html #&gt;&lt;/td&gt;
-&lt;td&gt;&lt;img src="&lt;# file_web_url #&gt;" /&gt;&lt;/td&gt;
-&lt;/tr&gt;
-&lt;# end row #&gt;
-
-&lt;# start footer #&gt;
-&lt;/table&gt;
-&lt;# end footer #&gt;
-
-&lt;# end list #&gt;</pre>
-                                    </th>
-                                </tr>
-                            </table>
-                            </div>
-            </div>
+                            <p class="expand-one"><h3 style="margin:0px"><input type="checkbox" onclick="easeUploadSelectCheck('local');" id="ease_local_upload_active" name="ease_local_upload_active" <?php echo $local_upload; ?>><a onclick="loadEASESettingsWindow('upload-settings-modal','Upload Settings');return false;">&nbsp;&nbsp;&nbsp;Enable upload/downloads to your hosted sites folder</a> - <a onclick="loadEASESettingsWindow('upload-settings-modal','Upload Settings');return false;" class="button" style="vertical-align:middle">Setup</a></h3>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Activate uploads/downloads to your hosted sites folder)</p>
+             </div>
             <?php submit_button(); ?>
             </form>
             </div>
@@ -868,7 +648,25 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
      *  
      */   
     function ease_landing_page(){
-        ease_load_core();
+        if(version_compare(PHP_VERSION, '5.4.0')>=0) {
+            ease_load_core();
+        }
+        
+        if($_GET['ease_admin_debug']){
+            echo "======<BR>Begin Server Info<BR><BR>Php Version: " . PHP_VERSION . "<BR><BR>";
+            foreach($_SERVER as $key=>$value){
+                if(!is_array($value)){
+                    echo $key . ": " . $value . "<BR>";
+                }else{
+                    echo $key . ": " . print_r($value,true) . "<BR>";
+                }
+            }
+            
+            echo "End Server Info<BR>======<BR><BR>";
+        }
+        
+        ease_plugin_settings();
+        
         echo "<script type='text/javascript'>
         function closeModal(){
             tb_show('', '#TB_inline?height=300&width=300&inlineId=confirmDiv&modal=false');
@@ -881,12 +679,9 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
             jQuery('#TB_closeAjaxWindow').html('<a onclick=\'closeModal();\'><div class=\'tb-close-icon\'></div></a>');
         }
         </script>
-        <div class='wrap'><h3>Welcome to Cloudward EASE and WordPress</h3></div>";
+        ";
         add_thickbox();
-        echo '<span>
-        <a onclick="loadWelcomeWindow();" title="" id="welcome-modal-link" name="welcome-modal-link" class="thickbox">EASE Framework Welcome Page</a>
-        </span>
-        <div id="welcome-modal-div" style="display:none;">
+        echo '<div id="welcome-modal-div" style="display:none;">
         <p><!DOCTYPE html>
 <html lang="en">
 <head>
@@ -895,24 +690,19 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
 	<!-- favicon -->
 	<link rel="shortcut icon" type="image/x-icon" href="favicon.ico">
 	<link rel="icon" href="favicon.ico">
-	
-	<link rel="stylesheet" type="text/css" href="http://www.cloudward.com/static/css/style.css" />
-	
-	<!-- fonts -->
-	<link href="http://fonts.googleapis.com/css?family=Lato:400,700,900,400italic" rel="stylesheet" type="text/css">
     <meta name="description" content="Welcome to Cloudward EASE Framework">
 </head>
 <body>
 	
-	<div class="cloudward-wp-popUp">
-		<div id="plugin-information-content">
-			<div class="cloudward-wp-popUp-content clearfix">
+		<div class="cloudward-wp-popUp">
+		
 				<div class="cloudward-wp-popUp-heading">
 					<h2>Welcome to the <strong class="blue-light">Cloudward EASE Framework</strong></h2>
 				</div>
 				<!-- description -->
-				<div class="cloudward-wp-popUp-description">
-					<div class="text-formating">
+				<table border="0" style="width:100%">
+                    <tr><td>
+				
 						<ul>
 							<li>To get started, view the <a href="https://www.youtube.com/watch?v=FhJv-GYYJPM" target="_blank">Getting Started with EASE </a>video </li>
 							<li>To build a Membership site, <a href="http://youtu.be/raLWG86tYEo" target="_blank">watch this video </a></li>
@@ -921,14 +711,14 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
 						    <li>Check out our <a href="http://support.cloudward.com/hc/en-us/articles/202589228-EASE-Reference-Guide" target="_blank">EASE Reference guide </a> </li>
 							<li><a href="http://support.cloudward.com/hc/en-us/articles/203257397-How-EASE-Works" target="_blank">Introduction to EASE</a>, <a href="http://support.cloudward.com/hc/en-us/articles/202174353-Introduction-to-EASE-Lists" target="_blank">Lists</a> and <a href="http://support.cloudward.com/hc/en-us/articles/202576608-Introduction-to-EASE-Forms">Forms</a> blogs</li>
 						</ul>
-					</div>
-				</div>
+				</td>
 				<!-- video -->
-				<div>
+				<td>
 				   <center><iframe id="startplayer" style="visibility: visible; display: block;" frameborder="0" allowfullscreen="1" title="YouTube video player" width="264" height="180" src="https://www.youtube.com/embed/FhJv-GYYJPM?autoplay=0&enablejsapi=1&amp;controls=2&amp;rel=0&amp;modestbranding=1&amp;showinfo=0&amp;hd=1&amp;autohide=1&amp;enablejsapi=1&amp;origin=http%3A%2F%2Fwww.cloudward.com"></iframe></center>
-				</div>
-			</div>
-		</div>
+				</td>
+				    
+				</tr></table>
+			
 	</div>
 	
 	<script src="//code.jquery.com/jquery-1.7.2.js"></script>
@@ -981,16 +771,16 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
     function register_ease_setting() {
             register_setting( 'easeoption-group', 'ease_db_name' );
             register_setting( 'easeoption-group', 'ease_project_id' );
-            register_setting( 'easeoption-group', 'ease_google_drive_active' );
+            register_setting( 'easeoption-group1', 'ease_google_drive_active' );
             register_setting( 'easeoption-group', 'ease_gapp_client_id' );
             register_setting( 'easeoption-group', 'ease_gapp_client_secret' );
-            register_setting( 'easeoption-group', 'ease_s3_active' );
+            register_setting( 'easeoption-group1', 'ease_s3_active' );
             register_setting( 'easeoption-group', 'ease_s3_bucket_public' );
             register_setting( 'easeoption-group', 'ease_s3_bucket_private' );
             register_setting( 'easeoption-group', 'ease_s3_access_key' );
             register_setting( 'easeoption-group', 'ease_s3_secret_access_key' );
             register_setting( 'easeoption-group', 'ease_has_shown_install_popup' );
-            register_setting( 'easeoption-group', 'ease_local_upload_active' );
+            register_setting( 'easeoption-group1', 'ease_local_upload_active' );
             register_setting( 'easeoption-group', 'ease_public_folder_upload_directory' );
             register_setting( 'easeoption-group', 'ease_private_folder_upload_directory' );
             register_setting( 'easeoption-group', 'ease_external_db_hostname' );
@@ -1010,9 +800,9 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
      *  
      */   
     function ease_plugin_menu(){
-        add_menu_page('Welcome','EASE','manage_options','ease_landing_page','ease_landing_page');
-        add_submenu_page('ease_landing_page','Settings','Settings','manage_options','ease_plugin_settings','ease_plugin_settings');
+        add_menu_page('Welcome','Cloudward EASE Settings','manage_options','ease_landing_page','ease_landing_page');
         add_submenu_page(null,'Create EASE Endpoint page','Create EASE Endpoint page','manage_options','create_ease_endpoint_page','create_ease_endpoint_page');
+        add_submenu_page(null,'Settings','Settings','manage_options','save_ease_settings_modal_values','save_ease_settings_modal_values');
     }
     
     /**
@@ -1127,6 +917,26 @@ File to Upload: &lt;input type="file" &lt;# file #&gt; /&gt;&lt;br /&gt;
                 add_option( "ease_replace_urls", $replace_urls);                
             }
             //update_post_meta( $post_id, '_my_meta_value_key', $my_data );
+    }
+    
+    function save_ease_settings_modal_values(){
+        update_option('ease_gapp_client_id',$_POST['ease_gapp_client_id']);
+        update_option('ease_gapp_client_secret',$_POST['ease_gapp_client_secret']);
+        update_option('ease_project_id',$_POST['ease_project_id']);
+        
+        update_option('ease_db_name',$_POST['ease_db_name']);
+        update_option('ease_disable_db_access',$_POST['ease_disable_db_access']);
+        
+        update_option('ease_s3_bucket_private',$_POST['ease_s3_bucket_private']);
+        update_option('ease_s3_bucket_public',$_POST['ease_s3_bucket_public']);
+        
+        update_option('ease_s3_access_key',$_POST['ease_s3_access_key']);
+        update_option('ease_s3_secret_access_key',$_POST['ease_s3_secret_access_key']);
+    }
+    
+    
+    function ease_drive_settings_modal_div(){
+        include_once plugin_dir_path( __FILE__ ) . 'settings_modals.php';
     }
     
     include_once plugin_dir_path( __FILE__ ) . 'plugin_function_includes.php';

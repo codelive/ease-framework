@@ -87,7 +87,6 @@ var script_object = {};
 
 	function loadScriptHelper(){
 		jQuery("#script-helper-modal-link").click();
-		jQuery("#TB_ajaxContent").css("height","90%");
 	}
 	
 	function loadScriptHelperText(script_name) {

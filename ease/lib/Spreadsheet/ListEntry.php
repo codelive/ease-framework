@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 namespace Google\Spreadsheet;
 
 /**
@@ -77,8 +78,8 @@ class ListEntry
 	public function update($values) {		
 		$entry = '<entry xmlns="http://www.w3.org/2005/Atom" xmlns:gsx="http://schemas.google.com/spreadsheets/2006/extended">';
 		$entry .= '<id>' . $this->xml->id->__toString() . '</id>';
-		foreach($values as $col => $val) {
-			$entry .= '<gsx:' . $col . '>' . $val . '</gsx:' . $col . '>';
+		foreach($values as $col=>$val) {
+			$entry .= '<gsx:' . $col . '>' . htmlspecialchars($val, ENT_COMPAT | ENT_XML1, 'UTF-8') . '</gsx:' . $col . '>';
 		}
 		$entry .= '</entry>';
 		$serviceRequest = ServiceRequestFactory::getInstance();
@@ -88,6 +89,14 @@ class ListEntry
 		$serviceRequest->getRequest()->setFullUrl($this->getEditUrl());
 		$serviceRequest->execute();
 	}
+
+    /**
+     * Delete the current entry.
+     */
+    public function delete()
+    {
+        ServiceRequestFactory::getInstance()->delete($this->getEditUrl());
+    }
 
 	/**
 	 * Get the edit url

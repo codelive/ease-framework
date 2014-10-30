@@ -19,8 +19,8 @@
  *
  * @author Mike <mike@cloudward.com>
  */
-class ease_core {
-
+class ease_core
+{
 	public $config = array();
 	public $globals = array();
 	public $environment;
@@ -215,6 +215,7 @@ class ease_core {
 	}
 
 	function __destruct() {
+		// explicitly disconnect the memcache and database
 		$this->memcache = null;
 		$this->db = null;
 	}
@@ -1096,19 +1097,24 @@ class ease_core {
 		$this->globals['system.name'] = &$this->globals['system.domain'];
 		$this->globals['system.host'] = $_SERVER['HTTP_HOST'];
 		$this->globals['system.http_host'] = 'http' . ((isset($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS'])=='on') ? 's' : '') . '://' . $_SERVER['HTTP_HOST'];
-		$this->globals['system.https_host'] = 'http' . (($_SERVER['SERVER_NAME']!='localhost') ? 's' : '') . '://' . $_SERVER['HTTP_HOST'];
 		$this->globals['system.host_url'] = &$this->globals['system.http_host'];
+		$this->globals['system.https_host'] = 'http' . (($_SERVER['SERVER_NAME']!='localhost') ? 's' : '') . '://' . $_SERVER['HTTP_HOST'];
+		$this->globals['system.secure_host_url'] = &$this->globals['system.https_host'];
 		if(isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER']!='') {
 			$this->globals['system.referrer'] = $_SERVER['HTTP_REFERER'];
 			$referrer_parts = parse_url($this->globals['system.referrer']);
 			$this->globals['system.referring_host'] = $referrer_parts['host'] . ((isset($referrer_parts['port']) && $referrer_parts['port']!='') ? ':' . $referrer_parts['port'] : '');
+			$this->globals['system.referring_scheme'] = strtolower($referrer_parts['scheme']);
 			$this->globals['system.referring_host_url'] = $referrer_parts['scheme'] . '://' . $this->globals['system.referring_host'];
 			$this->globals['system.https_referring_host'] = 'http' . (($referrer_parts['host']!='localhost') ? 's' : '') . '://' . $this->globals['system.referring_host'];
+			$this->globals['system.secure_referring_host_url'] = &$this->globals['system.https_referring_host'];
 		} else {
 			$this->globals['system.referrer'] = '';
 			$this->globals['system.referring_host'] = '';
+			$this->globals['system.referring_scheme'] = '';
 			$this->globals['system.referring_host_url'] = '';
 			$this->globals['system.https_referring_host'] = '';
+			$this->globals['system.secure_referring_host_url'] = '';
 		}
 		$this->globals['system.timestamp'] = $_SERVER['REQUEST_TIME'];
 		if(isset($_SERVER['REQUEST_TIME_FLOAT'])) {
@@ -1247,20 +1253,17 @@ class ease_core {
 			} else {
 				$body = '';
 			}
-			$smtp = Mail::factory(
-				'smtp',
-				array(
-					'host'=>$this->config['ses_smtp_host'],
-					'port'=>(isset($this->config['ses_smtp_port']) && trim($this->config['ses_smtp_port'])!='') ? $this->config['ses_smtp_port'] : 25,
-					'auth'=>true,
-					'username'=>$this->config['ses_smtp_username'],
-					'password'=>$this->config['ses_smtp_password']
-				)
-			);
+			$smtp = Mail::factory('smtp', array(
+				'host'=>$this->config['ses_smtp_host'],
+				'port'=>(isset($this->config['ses_smtp_port']) && trim($this->config['ses_smtp_port'])!='') ? $this->config['ses_smtp_port'] : 25,
+				'auth'=>true,
+				'username'=>$this->config['ses_smtp_username'],
+				'password'=>$this->config['ses_smtp_password']
+			));
 			$mail = $smtp->send($mail_options['to'], $headers, $body);
 			if(PEAR::isError($mail)) {
-				// TODO!! log this error
 				// echo '<p>' . htmlspecialchars($mail->getMessage()) . '</p>';
+				// TODO!! log this error
 				return false;
 			} else {
 				return $mail;

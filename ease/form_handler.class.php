@@ -19,8 +19,8 @@
  *
  * @author Mike <mike@cloudward.com>
  */
-class ease_form_handler {
-
+class ease_form_handler
+{
 	public $core;
 	public $interpreter;
 	public $form_info;
@@ -35,7 +35,7 @@ class ease_form_handler {
 
 		// validate the requested EASE Form ID
 		// TODO! if the user session has expired, form posts will fail... perhaps store the form info in the DB as well, 
-		// -- but that eliminates the added layer of security of restricting the post to the current session
+		// - but that eliminates the added layer of security of restricting the post to the current session...
 		if(!isset($_SESSION['ease_forms'][$_REQUEST['ease_form_id']])) {
 			echo 'Invalid EASE Form ID: ' . htmlspecialchars($_REQUEST['ease_form_id']);
 			exit;
@@ -55,7 +55,7 @@ class ease_form_handler {
 					$key = preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($input_key)));
 				}
 				if(isset($this->form_info['sql_table_name']) && trim($this->form_info['sql_table_name'])!='') {
-					// this is a form for a SQL Table
+					// this is a form for an SQL Table
 					if(isset($this->form_info['inputs']) && is_array($this->form_info['inputs'])) {
 						foreach($this->form_info['inputs'] as $post_key=>$map_bucket_key) {
 							$map_bucket_key_parts = explode('.', $map_bucket_key, 2);
@@ -76,7 +76,7 @@ class ease_form_handler {
 					}
 				} else {
 					// this is a non-SQL form... inputs are stored slightly differently as they also include the uncleansed field names
-					// this allows spreadsheet forms to set the column header to "Original Name" while still referencing the column as "original_name"
+					// this allows spreadsheet forms to set the column header to "Original Name" while referencing the column as "originalname"
 					$key = preg_replace('/^[0-9]+/', '', str_replace('_', '', $key));
 					if(isset($this->form_info['inputs']) && is_array($this->form_info['inputs'])) {
 						foreach($this->form_info['inputs'] as $post_key=>$map_array) {
@@ -86,7 +86,7 @@ class ease_form_handler {
 									break;
 								} else {
 									// post restriction was not met... error out
-									// TODO!  allow users to define error pages or automatically redirect back to the form
+									// TODO!!  allow users to define error pages or automatically redirect back to the form
 									echo 'EASE Form Error → Post Restricted - Invalid ' . htmlspecialchars(strtoupper($key));
 									exit;
 								}
@@ -97,7 +97,7 @@ class ease_form_handler {
 			}
 		}
 
-		// validate posted data
+		// validate any posted data with validated input types
 		$invalid_inputs = array();
 		if(isset($this->form_info['input_validations']) && is_array($this->form_info['input_validations'])) {
 			foreach($this->form_info['input_validations'] as $post_key=>$validation_type) {
@@ -438,7 +438,7 @@ class ease_form_handler {
 									$existing_s3_buckets = $s3->listBuckets();
 									if(!in_array($s3_bucket_private, $existing_s3_buckets)) {
 										if(!$s3->putBucket($s3_bucket_private, S3::ACL_PRIVATE)) {
-											echo "Error Creating Private S3 Bucket";
+											echo 'Error!  Unable to create Private AWS S3 Bucket named: ' . htmlspecialchars($s3_bucket_private);
 											exit;
 										}
 									}
@@ -450,7 +450,7 @@ class ease_form_handler {
 										$new_row[$key . '_s3_uri'] = $s3_folder . '/' . $s3_file_uri;
 										$new_row[$key . '_path'] = 's3://' . $new_row[$key . '_s3_bucket'] . '/' . $new_row[$key . '_s3_uri'];
 									} else {
-										echo "Error Uploading File to AWS S3 Bucket: " . htmlspecialchars($s3_bucket_private);
+										echo 'Error!  Unable to upload file to Private AWS S3 Bucket named: ' . htmlspecialchars($s3_bucket_private);
 										exit;
 									}
 								} else {
@@ -464,7 +464,7 @@ class ease_form_handler {
 									$existing_s3_buckets = $s3->listBuckets();
 									if(!in_array($s3_bucket_public, $existing_s3_buckets)) {
 										if(!$s3->putBucket($s3_bucket_public, S3::ACL_PUBLIC_READ)) {
-											echo "Error Creating Public S3 Bucket";
+											echo 'Error!  Unable to create Public AWS S3 Bucket named: ' . htmlspecialchars($s3_bucket_public);
 											exit;
 										}
 									}
@@ -477,7 +477,7 @@ class ease_form_handler {
 										$new_row[$key . '_path'] = 's3://' . $new_row[$key . '_s3_bucket'] . '/' . $new_row[$key . '_s3_uri'];
 										$new_row[$key . '_web_url'] = 'https://s3.amazonaws.com/' . $new_row[$key . '_s3_bucket'] . '/' . $new_row[$key . '_s3_uri'];
 									} else {
-										echo "Error Uploading File to AWS S3 Bucket: " . htmlspecialchars($s3_bucket_public);
+										echo 'Error!  Unable to upload file to Public AWS S3 Bucket named: ' . htmlspecialchars($s3_bucket_public);
 										exit;
 									}
 								}
@@ -591,24 +591,25 @@ class ease_form_handler {
 				$new_row[$key] = $set_value;
 			}
 		}
+		$namespaced_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $this->form_info['sql_table_name']), '_');		
 		// if new row data exists, insert a new row into the SQL Table, otherwise do nothing
 		if(isset($new_row) && $this->core->db && !$this->core->db_disabled) {
 			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$this->form_info['sql_table_name']}`;");
+			$result = $this->core->db->query("DESCRIBE `$namespaced_sql_table_name`;");
 			if($result) {
 				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 				foreach(array_keys($new_row) as $column) {
 					if(!in_array($column, $existing_columns)) {
 						if(sizeof($new_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$this->form_info['sql_table_name']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							$this->core->db->exec("ALTER TABLE `$namespaced_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 						} else {
-							$this->core->db->exec("ALTER TABLE `{$this->form_info['sql_table_name']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							$this->core->db->exec("ALTER TABLE `$namespaced_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 						}
 					}
 				}
 				if(!in_array('updated_on', $existing_columns)) {
-					$this->core->db->exec("ALTER TABLE `{$this->form_info['sql_table_name']}` ADD COLUMN updated_on TIMESTAMP;");
+					$this->core->db->exec("ALTER TABLE `$namespaced_sql_table_name` ADD COLUMN updated_on TIMESTAMP;");
 				}
 			} else {
 				// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
@@ -622,7 +623,7 @@ class ease_form_handler {
 						}
 					}
 				}
-				$sql = "	CREATE TABLE `{$this->form_info['sql_table_name']}` (
+				$sql = "	CREATE TABLE `$namespaced_sql_table_name` (
 								instance_id int NOT NULL PRIMARY KEY auto_increment,
 								created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
 								updated_on timestamp NOT NULL,
@@ -644,12 +645,13 @@ class ease_form_handler {
 				$insert_columns_sql .= ",`$key`=:$key";
 				$params[":$key"] = (string)$value;
 			}
-			$query = $this->core->db->prepare("	REPLACE INTO `{$this->form_info['sql_table_name']}`
+			$query = $this->core->db->prepare("	REPLACE INTO `$namespaced_sql_table_name`
 												SET uuid=:uuid
 													$insert_columns_sql;	");
 			$query->execute($params);
 			// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 		}
+		// new instance was added to SQL Table... process any Form Actions
 		// execute any set cookie or session variable commands for the form action
 		foreach($this->form_info['set_to_list_by_action'][$action] as $bucket_key=>$value) {
 			$bucket_key_parts = explode('.', $bucket_key, 2);
@@ -723,17 +725,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_create_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $create_sql_record['for']), '_');		
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_create_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($create_sql_record_new_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -749,7 +752,7 @@ class ease_form_handler {
 							}
 						}
 					}
-					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+					$sql = "	CREATE TABLE `$namespaced_create_for_sql_table_name` (
 									instance_id int NOT NULL PRIMARY KEY auto_increment,
 									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
 									updated_on timestamp NOT NULL,
@@ -771,7 +774,7 @@ class ease_form_handler {
 					$insert_columns_sql .= ",`$key`=:$key";
 					$create_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+				$query = $this->core->db->prepare("	REPLACE INTO `$namespaced_create_for_sql_table_name`
 													SET uuid=:uuid
 														$insert_columns_sql;	");
 				$query->execute($create_sql_record_params);
@@ -824,17 +827,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_update_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $update_sql_record['for']), '_');		
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_update_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($update_sql_record_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($update_sql_record_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -847,7 +851,7 @@ class ease_form_handler {
 					$update_columns_sql .= ",`$key`=:$key";
 					$update_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+				$query = $this->core->db->prepare("	UPDATE `$namespaced_update_for_sql_table_name`
 													SET updated_on=NOW()
 														$update_columns_sql
 													WHERE uuid=:uuid;	");
@@ -869,8 +873,9 @@ class ease_form_handler {
 					// delete record with no referenced record to delete.... hmm...
 					continue;
 				}
+				$namespaced_delete_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $delete_sql_record['for']), '_');		
 				// build the query to delete the row
-				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$query = $this->core->db->prepare("DELETE FROM `$namespaced_delete_for_sql_table_name` WHERE uuid=:uuid;");
 				$result = $query->execute($delete_sql_record_params);
 			}
 		}
@@ -890,8 +895,9 @@ class ease_form_handler {
 	function update_instance_in_sql_table($action) {
 		// check if a database connection exists and hasn't been disabled
 		if($this->core->db && !$this->core->db_disabled) {
+			$namespaced_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $this->form_info['sql_table_name']), '_');		
 			// query for existing data for the record being updated
-			$query = $this->core->db->prepare("SELECT * FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
+			$query = $this->core->db->prepare("SELECT * FROM `$namespaced_sql_table_name` WHERE uuid=:uuid;");
 			$params = array(':uuid'=>(string)$this->form_info['instance_uuid']);
 			if($query->execute($params)) {
 				$existing_record = $query->fetch(PDO::FETCH_ASSOC);
@@ -1002,7 +1008,7 @@ class ease_form_handler {
 								try {
 									if($file_attributes['type']=='message/external-body') {
 										// this is likely an upload from a local dev environment
-										// TODO! parse the file headers to get the X-AppEngine-Cloud-Storage-Object setting and process that file instead
+										// TODO!! parse the file headers to get the X-AppEngine-Cloud-Storage-Object setting and process that file instead
 										break;
 									} else {
 										$uploaded_file = $service->files->insert($file, array('data'=>file_get_contents($file_attributes['tmp_name']), 'mimeType'=>$file_attributes['type'], 'uploadType'=>'multipart'));
@@ -1062,7 +1068,7 @@ class ease_form_handler {
 									$existing_s3_buckets = $s3->listBuckets();
 									if(!in_array($s3_bucket_private, $existing_s3_buckets)) {
 										if(!$s3->putBucket($s3_bucket_private, S3::ACL_PRIVATE)) {
-											echo "Error Creating Private S3 Bucket";
+											echo 'Error!  Unable to create Private AWS S3 Bucket named: ' . htmlspecialchars($s3_bucket_private);
 											exit;
 										}
 									}
@@ -1074,7 +1080,7 @@ class ease_form_handler {
 										$updated_row[$key . '_s3_uri'] = $s3_folder . '/' . $s3_file_uri;
 										$updated_row[$key . '_path'] = 's3://' . $updated_row[$key . '_s3_bucket'] . '/' . $updated_row[$key . '_s3_uri'];
 									} else {
-										echo "Error Uploading File to AWS S3 Bucket: " . htmlspecialchars($s3_bucket_private);
+										echo 'Error!  Unable to upload file to Private AWS S3 Bucket named: ' . htmlspecialchars($s3_bucket_private);
 										exit;
 									}
 								} else {
@@ -1088,7 +1094,7 @@ class ease_form_handler {
 									$existing_s3_buckets = $s3->listBuckets();
 									if(!in_array($s3_bucket_public, $existing_s3_buckets)) {
 										if(!$s3->putBucket($s3_bucket_public, S3::ACL_PUBLIC_READ)) {
-											echo "Error Creating Public S3 Bucket";
+											echo 'Error!  Unable to create Public AWS S3 Bucket named: ' . htmlspecialchars($s3_bucket_public);
 											exit;
 										}
 									}
@@ -1101,7 +1107,7 @@ class ease_form_handler {
 										$updated_row[$key . '_path'] = 's3://' . $updated_row[$key . '_s3_bucket'] . '/' . $updated_row[$key . '_s3_uri'];
 										$updated_row[$key . '_web_url'] = 'https://s3.amazonaws.com/' . $updated_row[$key . '_s3_bucket'] . '/' . $updated_row[$key . '_s3_uri'];
 									} else {
-										echo "Error Uploading File to AWS S3 Bucket: " . htmlspecialchars($s3_bucket_public);
+										echo 'Error!  Unable to upload file to Public AWS S3 Bucket named: ' . htmlspecialchars($s3_bucket_public);
 										exit;
 									}
 								}
@@ -1258,21 +1264,21 @@ class ease_form_handler {
 		// if updated row data exists, update the instance in the SQL Table, otherwise do nothing
 		if(isset($updated_row) && $this->core->db && !$this->core->db_disabled) {
 			// make sure the SQL Table exists and has all the columns referenced in the new row
-			$result = $this->core->db->query("DESCRIBE `{$this->form_info['sql_table_name']}`;");
+			$result = $this->core->db->query("DESCRIBE `$namespaced_sql_table_name`;");
 			if($result) {
 				// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 				foreach(array_keys($updated_row) as $column) {
 					if(!in_array($column, $existing_columns)) {
 						if(sizeof($updated_row[$column]) > 65535) {
-							$this->core->db->exec("ALTER TABLE `{$this->form_info['sql_table_name']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+							$this->core->db->exec("ALTER TABLE `$namespaced_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 						} else {
-							$this->core->db->exec("ALTER TABLE `{$this->form_info['sql_table_name']}` ADD COLUMN `$column` text NOT NULL default '';");
+							$this->core->db->exec("ALTER TABLE `$namespaced_sql_table_name` ADD COLUMN `$column` text NOT NULL default '';");
 						}
 					}
 				}
 				if(!in_array('updated_on', $existing_columns)) {
-					$this->core->db->exec("ALTER TABLE `{$this->form_info['sql_table_name']}` ADD COLUMN updated_on TIMESTAMP;");
+					$this->core->db->exec("ALTER TABLE `$namespaced_sql_table_name` ADD COLUMN updated_on TIMESTAMP;");
 				}
 			} else {
 				// the SQL Table doesn't exist; create it with all of the columns referenced in the new row
@@ -1285,7 +1291,7 @@ class ease_form_handler {
 						}
 					}
 				}
-				$this->core->db->exec("	CREATE TABLE `{$this->form_info['sql_table_name']}` (
+				$this->core->db->exec("	CREATE TABLE `$namespaced_sql_table_name` (
 											instance_id INT NOT NULL PRIMARY KEY auto_increment,
 											created_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 											updated_on TIMESTAMP,
@@ -1301,13 +1307,14 @@ class ease_form_handler {
 				$params[":$key"] = (string)$value;
 			}
 			$params[":uuid"] = $this->form_info['instance_uuid'];
-			$query = $this->core->db->prepare(" UPDATE `{$this->form_info['sql_table_name']}`
+			$query = $this->core->db->prepare(" UPDATE `$namespaced_sql_table_name`
 												SET updated_on=NOW()
 													$update_columns_sql
 												WHERE uuid=:uuid;	");
 			$result = $query->execute($params);
-			// TODO! check for query errors
+			// TODO!! check for query errors
 		}
+		// done updating instance in SQL Table... process any Form Actions
 		// execute any set cookie or session variable commands for the form action
 		foreach($this->form_info['set_to_list_by_action'][$action] as $bucket_key=>$value) {
 			$bucket_key_parts = explode('.', $bucket_key, 2);
@@ -1381,17 +1388,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_create_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $create_sql_record['for']), '_');						
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_create_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($create_sql_record_new_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -1407,7 +1415,7 @@ class ease_form_handler {
 							}
 						}
 					}
-					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+					$sql = "	CREATE TABLE `$namespaced_create_for_sql_table_name` (
 									instance_id int NOT NULL PRIMARY KEY auto_increment,
 									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
 									updated_on timestamp NOT NULL,
@@ -1429,11 +1437,11 @@ class ease_form_handler {
 					$insert_columns_sql .= ",`$key`=:$key";
 					$create_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+				$query = $this->core->db->prepare("	REPLACE INTO `$namespaced_create_for_sql_table_name`
 													SET uuid=:uuid
 														$insert_columns_sql;	");
 				$query->execute($create_sql_record_params);
-				// TODO!  check for query errors like updating a column that wasn't set to hold over 64k of data with more than 64k of data...
+				// TODO!!  check for query errors like updating a column that wasn't set to hold over 64k of data with more than 64k of data...
 			}
 			// execute any UPDATE RECORD - FOR CLOUD SQL TABLE commands for the form action
 			@$this->form_info['update_sql_record_list_by_action'][$action] = array_merge(
@@ -1482,17 +1490,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_update_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $update_sql_record['for']), '_');						
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_update_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($update_sql_record_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($update_sql_record_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -1505,12 +1514,12 @@ class ease_form_handler {
 					$update_columns_sql .= ",`$key`=:$key";
 					$update_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+				$query = $this->core->db->prepare("	UPDATE `$namespaced_update_for_sql_table_name`
 													SET updated_on=NOW()
 														$update_columns_sql
 													WHERE uuid=:uuid;	");
 				$result = $query->execute($update_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
+				// TODO!! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
 			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
@@ -1527,8 +1536,9 @@ class ease_form_handler {
 					// delete record with no referenced record to delete... skip it
 					continue;
 				}
+				$namespaced_delete_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $delete_sql_record['for']), '_');						
 				// build the query to delete the row
-				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$query = $this->core->db->prepare("DELETE FROM `$namespaced_delete_for_sql_table_name` WHERE uuid=:uuid;");
 				$result = $query->execute($delete_sql_record_params);
 			}
 		}
@@ -1548,25 +1558,27 @@ class ease_form_handler {
 	function delete_instance_from_sql_table($action) {
 		// only process SQL deletes if a database connection exists and hasn't been disabled
 		if($this->core->db && !$this->core->db_disabled) {
-			// query for existing data for the record being updated
-			$query = $this->core->db->prepare("SELECT * FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
+			$namespaced_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $this->form_info['sql_table_name']), '_');						
+			// query for existing data for the record being deleted
+			$query = $this->core->db->prepare("SELECT * FROM `$namespaced_sql_table_name` WHERE uuid=:uuid;");
 			$params = array(':uuid'=>(string)$this->form_info['instance_uuid']);
 			if($query->execute($params)) {
 				$existing_record = $query->fetch(PDO::FETCH_ASSOC);
 			} else {
-				// this is an update form for a record that doesn't exist... error out?
+				// this is a delete form for a record that doesn't exist... error out?
 				$existing_record = array();
 			}
 			// delete the requested instance
-			$query = $this->core->db->prepare("DELETE FROM `{$this->form_info['sql_table_name']}` WHERE uuid=:uuid;");
+			$query = $this->core->db->prepare("DELETE FROM `$namespaced_sql_table_name` WHERE uuid=:uuid;");
 			$params = array(':uuid'=>$this->form_info['instance_uuid']);
 			$result = $query->execute($params);
-			// execute any set cookie or session variable commands for the form action
-			@$this->form_info['set_to_list_by_action'][$action] = array_merge(
-				(array)$this->form_info['set_to_list_by_action'][$action],
-				(array)$this->form_info['set_to_list_by_action']['done']
-			);
 		}
+		// done deleting instance from SQL Table... process any Form Actions
+		// execute any set cookie or session variable commands for the form action
+		@$this->form_info['set_to_list_by_action'][$action] = array_merge(
+			(array)$this->form_info['set_to_list_by_action'][$action],
+			(array)$this->form_info['set_to_list_by_action']['done']
+		);
 		foreach($this->form_info['set_to_list_by_action'][$action] as $bucket_key=>$value) {
 			$bucket_key_parts = explode('.', $bucket_key, 2);
 			if(count($bucket_key_parts)==2) {
@@ -1639,17 +1651,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_create_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $create_sql_record['for']), '_');
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_create_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($create_sql_record_new_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -1665,7 +1678,7 @@ class ease_form_handler {
 							}
 						}
 					}
-					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+					$sql = "	CREATE TABLE `$namespaced_create_for_sql_table_name` (
 									instance_id int NOT NULL PRIMARY KEY auto_increment,
 									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
 									updated_on timestamp NOT NULL,
@@ -1687,7 +1700,7 @@ class ease_form_handler {
 					$insert_columns_sql .= ",`$key`=:$key";
 					$create_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+				$query = $this->core->db->prepare("	REPLACE INTO `$namespaced_create_for_sql_table_name`
 													SET uuid=:uuid
 														$insert_columns_sql;	");
 				$query->execute($create_sql_record_params);
@@ -1739,17 +1752,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_update_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $update_sql_record['for']), '_');
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_update_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($update_sql_record_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($update_sql_record_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -1762,12 +1776,12 @@ class ease_form_handler {
 					$update_columns_sql .= ",`$key`=:$key";
 					$update_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+				$query = $this->core->db->prepare("	UPDATE `$namespaced_update_for_sql_table_name`
 													SET updated_on=NOW()
 														$update_columns_sql
 													WHERE uuid=:uuid;	");
 				$result = $query->execute($update_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
+				// TODO!! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
 			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
@@ -1784,10 +1798,10 @@ class ease_form_handler {
 					// delete record with no referenced record to delete.... hmm...
 					continue;
 				}
+				$namespaced_delete_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $delete_sql_record['for']), '_');
 				// build the query to delete the row
-				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$query = $this->core->db->prepare("DELETE FROM `$namespaced_delete_for_sql_table_name` WHERE uuid=:uuid;");
 				$result = $query->execute($delete_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 		}
 		// execute any redirect commands from form actions
@@ -1813,6 +1827,7 @@ class ease_form_handler {
 		Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
 		$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
 		// determine if the Google Drive Spreadsheet was referenced by name or ID
+		$spreadSheet = null;
 		$new_spreadsheet_created = false;
 		if($this->form_info['google_spreadsheet_id']) {
 			$spreadSheet = $spreadsheetService->getSpreadsheetById($this->form_info['google_spreadsheet_id']);
@@ -1821,7 +1836,7 @@ class ease_form_handler {
 				// flush the cached meta data for the Google Drive Spreadsheet ID which may no longer be valid
 				$this->core->flush_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id']);
 				$this->form_info['google_spreadsheet_id'] = '';
-				// try adding the row again using the Google Drive Spreadsheet name which will automatically re-create the Google Drive Spreadsheet
+				// try adding the row again using the Google Drive Spreadsheet name (if set) which will automatically re-create the Google Drive Spreadsheet
 				$this->add_row_to_googlespreadsheet();
 				exit;
 			}
@@ -1905,7 +1920,7 @@ class ease_form_handler {
 				$google_spreadsheet_id = $new_spreadsheet['id'];
 				// check if there was an error creating the Google Drive Spreadsheet
 				if(!$google_spreadsheet_id) {
-					echo "Error!  Unable to create Google Drive Spreadsheet named: " . htmlspecialchars($this->form_info['google_spreadsheet_name']);
+					echo 'Error!  Unable to create Google Drive Spreadsheet named: ' . htmlspecialchars($this->form_info['google_spreadsheet_name']);
 					exit;
 				}
 				// cache the meta data for the new Google Drive Spreadsheet (id, name, column name to letter map, column letter to name map)
@@ -1925,26 +1940,28 @@ class ease_form_handler {
 		}
 		// ensure a Google Drive Spreadsheet was laoded
 		if($spreadSheet===null) {
-			echo "Error!  Could not load Google Drive Spreadsheet.";
+			echo 'Error!  Unable to load Google Drive Spreadsheet.';
 			exit;
 		}
 		// load the worksheets in the Google Drive Spreadsheet
 		$worksheetFeed = $spreadSheet->getWorksheets();
+		// use the requested worksheet, or default to the first worksheet
 		if($this->form_info['save_to_sheet']) {
 			$worksheet = $worksheetFeed->getByTitle($this->form_info['save_to_sheet']);
 			if($worksheet===null) {
-				// the supplied worksheet name did not match an existing worksheet of the Google Drive Spreadsheet;  create a new worksheet using the supplied name
+				// the supplied worksheet name did not match an existing worksheet in the Google Drive Spreadsheet
+				// create a new worksheet using the supplied worksheet name
 				$header_row = array();
 				foreach($this->form_info['inputs'] as $value) {
 					$header_row[] = $value['original_name'];
 				}
-				// pad empty values up to column T
+				// pad empty values in the header row up to column T
 				$header_row_count = count($this->form_info['inputs']);
 				while($header_row_count < 19) {
 					$header_row[] = '';
 					$header_row_count++;
 				}
-				// add column for unique row ID used by the EASE core to enable row update and delete
+				// add column for unique "EASE Row ID" used by the EASE Framework to enable row update and delete
 				$header_row[] = 'EASE Row ID';
 				$new_worksheet_rows = 100;
 				if(count($header_row) < 20) {
@@ -1965,7 +1982,7 @@ class ease_form_handler {
 		}
 		// check for unloaded worksheet
 		if($worksheet===null) {
-			echo "Google Drive Spreadsheet Error!  Could not load Worksheet.";
+			echo "Google Drive Spreadsheet Error!  Unable to load Worksheet.";
 			exit;
 		}
 		// load the meta data for the sheet
@@ -1977,7 +1994,7 @@ class ease_form_handler {
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($this->form_info['google_spreadsheet_name'], $this->form_info['save_to_sheet']);
 		}
 		// build the new row to insert into the worksheet
-		if(is_array($this->form_info['inputs'])) {
+		if(isset($this->form_info['inputs']) && is_array($this->form_info['inputs'])) {
 			$row = array();
 			foreach($this->form_info['inputs'] as $key=>$value) {
 				if(isset($_POST[$key])) {
@@ -2049,7 +2066,9 @@ class ease_form_handler {
 				$listFeed->insert($row);
 			}
 		}
-		// insert a key value in the new row for each column value by letter instead of header name
+		// done adding row to Google Drive Spreadsheet... process any Form Actions
+		// duplicate the row keys so there are values for both column letter and column name;
+		// - this is done to simplify local variable injection while processing Form Actions
 		foreach($row as $key=>$value) {
 			$row[$spreadsheet_meta_data['column_letter_by_name'][$key]] = $value;
 		}
@@ -2058,18 +2077,22 @@ class ease_form_handler {
 			(array)$this->form_info['set_to_list_by_action'][$action],
 			(array)$this->form_info['set_to_list_by_action']['done']
 		);
-		foreach($this->form_info['set_to_list_by_action'][$action] as $set_to_command) {
-			$value = $set_to_command['value'];
-			$this->inject_form_variables($value, $row['easerowid'], $row);
-			switch(strtolower($set_to_command['bucket'])) {
-				case 'session':
-					$_SESSION[$set_to_command['key']] = $value;
-					break;
-				case 'cookie':
-					setcookie($set_to_command['key'], $value, time() + 60 * 60 * 24 * 365, '/');
-					$_COOKIE[$set_to_command['key']] = $value;
-					break;
-				default:
+		foreach($this->form_info['set_to_list_by_action'][$action] as $bucket_key=>$value) {
+			$bucket_key_parts = explode('.', $bucket_key, 2);
+			if(count($bucket_key_parts)==2) {
+				$bucket = rtrim($bucket_key_parts[0]);
+				$key = ltrim($bucket_key_parts[1]);
+				$this->inject_form_variables($value, $row['easerowid'], $row);
+				switch(strtolower($bucket)) {
+					case 'session':
+						$_SESSION[$key] = $value;
+						break;
+					case 'cookie':
+						setcookie($key, $value, time() + 60 * 60 * 24 * 365, '/');
+						$_COOKIE[$key] = $value;
+						break;
+					default:
+				}
 			}
 		}
 		// execute any SEND EMAIL commands for the form action
@@ -2126,17 +2149,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_create_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $create_sql_record['for']), '_');
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_create_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($create_sql_record_new_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -2152,7 +2176,7 @@ class ease_form_handler {
 							}
 						}
 					}
-					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+					$sql = "	CREATE TABLE `$namespaced_create_for_sql_table_name` (
 									instance_id int NOT NULL PRIMARY KEY auto_increment,
 									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
 									updated_on timestamp NOT NULL,
@@ -2174,7 +2198,7 @@ class ease_form_handler {
 					$insert_columns_sql .= ",`$key`=:$key";
 					$create_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+				$query = $this->core->db->prepare("	REPLACE INTO `$namespaced_create_for_sql_table_name`
 													SET uuid=:uuid
 														$insert_columns_sql;	");
 				$query->execute($create_sql_record_params);
@@ -2226,17 +2250,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_update_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $update_sql_record['for']), '_');
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_update_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($update_sql_record_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($update_sql_record_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -2249,12 +2274,12 @@ class ease_form_handler {
 					$update_columns_sql .= ",`$key`=:$key";
 					$update_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+				$query = $this->core->db->prepare("	UPDATE `$namespaced_update_for_sql_table_name`
 													SET updated_on=NOW()
 														$update_columns_sql
 													WHERE uuid=:uuid;	");
 				$result = $query->execute($update_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
+				// TODO!! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
 			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
@@ -2271,10 +2296,10 @@ class ease_form_handler {
 					// delete record with no referenced record to delete.... hmm...
 					continue;
 				}
+				$namespaced_delete_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $delete_sql_record['for']), '_');
 				// build the query to delete the row
-				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$query = $this->core->db->prepare("DELETE FROM `$namespaced_delete_for_sql_table_name` WHERE uuid=:uuid;");
 				$result = $query->execute($delete_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 		}
 		// execute any redirect commands from form actions
@@ -2392,7 +2417,7 @@ class ease_form_handler {
 				$google_spreadsheet_id = $new_spreadsheet['id'];
 				// ensure a Google Drive Spreadsheet ID was received
 				if(!$google_spreadsheet_id) {
-					echo "Error!  Unable to create Google Drive Spreadsheet named: " . htmlspecialchars($this->form_info['google_spreadsheet_name']);
+					echo 'Error!  Unable to create Google Drive Spreadsheet named: ' . htmlspecialchars($this->form_info['google_spreadsheet_name']);
 					exit;
 				}
 				// cache the meta data for the new Google Drive Spreadsheet
@@ -2413,7 +2438,7 @@ class ease_form_handler {
 		}
 		// ensure a Google Drive Spreadsheet was laoded
 		if($spreadSheet===null) {
-			echo "Error!  Could not load Google Drive Spreadsheet.";
+			echo 'Error!  Unable to load Google Drive Spreadsheet';
 			exit;
 		}
 		// load the worksheets in the Google Drive Spreadsheet
@@ -2451,21 +2476,21 @@ class ease_form_handler {
 		} else {
 			$worksheet = $worksheetFeed->getFirstSheet();
 		}
-		// check for unloaded worksheet
+		// ensure a worksheet has been loaded
 		if($worksheet===null) {
-			echo "Google Drive Spreadsheet Error!  Could not load Worksheet.";
+			echo 'Google Drive Spreadsheet Error!  Unable to load Worksheet.';
 			exit;
 		}
-		// load the meta data for the sheet
+		// load the meta data for the Google Sheet
 		if($this->form_info['google_spreadsheet_id']) {
-			// load the Google Drive Spreadsheet by the referenced ID
+			// Google Drive Spreadsheet was referenced by ID
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id'], $this->form_info['save_to_sheet']);
 		} elseif($this->form_info['google_spreadsheet_name']) {
-			// load the Google Drive Spreadsheet by the referenced name
+			// Google Drive Spreadsheet was referenced by "Name"
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($this->form_info['google_spreadsheet_name'], $this->form_info['save_to_sheet']);
 		}
-		// build the updated row to insert into the sheet
-		if(is_array($this->form_info['inputs'])) {
+		// build the updated row to replace into the sheet
+		if(isset($this->form_info['inputs']) && is_array($this->form_info['inputs'])) {
 			$row = array();
 			foreach($this->form_info['inputs'] as $key=>$value) {
 				if(isset($_POST[$key])) {
@@ -2546,6 +2571,8 @@ class ease_form_handler {
 				}
 			}
 		}
+		// done updating row in Google Drive Spreadsheet... process any Form Actions
+		
 		// insert a key value in the new row for each column value by letter instead of header name
 		foreach($row as $key=>$value) {
 			$row[$spreadsheet_meta_data['column_letter_by_name'][$key]] = $value;
@@ -2623,17 +2650,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_create_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $create_sql_record['for']), '_');
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_create_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($create_sql_record_new_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -2649,7 +2677,7 @@ class ease_form_handler {
 							}
 						}
 					}
-					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+					$sql = "	CREATE TABLE `$namespaced_create_for_sql_table_name` (
 									instance_id int NOT NULL PRIMARY KEY auto_increment,
 									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
 									updated_on timestamp NOT NULL,
@@ -2671,7 +2699,7 @@ class ease_form_handler {
 					$insert_columns_sql .= ",`$key`=:$key";
 					$create_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+				$query = $this->core->db->prepare("	REPLACE INTO `$namespaced_create_for_sql_table_name`
 													SET uuid=:uuid
 														$insert_columns_sql;	");
 				$query->execute($create_sql_record_params);
@@ -2723,17 +2751,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_update_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $update_sql_record['for']), '_');
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_update_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($update_sql_record_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($update_sql_record_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -2746,12 +2775,12 @@ class ease_form_handler {
 					$update_columns_sql .= ",`$key`=:$key";
 					$update_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+				$query = $this->core->db->prepare("	UPDATE `$namespaced_update_for_sql_table_name`
 													SET updated_on=NOW()
 														$update_columns_sql
 													WHERE uuid=:uuid;	");
 				$result = $query->execute($update_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
+				// TODO!! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
 			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
@@ -2768,10 +2797,10 @@ class ease_form_handler {
 					// delete record with no referenced record to delete.... hmm...
 					continue;
 				}
+				$namespaced_delete_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $delete_sql_record['for']), '_');
 				// build the query to delete the row
-				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$query = $this->core->db->prepare("DELETE FROM `$namespaced_delete_for_sql_table_name` WHERE uuid=:uuid;");
 				$result = $query->execute($delete_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 		}
 		// execute any redirect commands from form actions
@@ -2813,13 +2842,13 @@ class ease_form_handler {
 			$spreadsheetFeed = $spreadsheetService->getSpreadsheets();
 			$spreadSheet = $spreadsheetFeed->getByTitle($this->form_info['google_spreadsheet_name']);
 			if($spreadSheet===null) {
-				echo "Error!  Unable to load Google Drive Spreadsheet named: " . htmlspecialchars($this->form_info['google_spreadsheet_name']);
+				echo 'Error!  Unable to load Google Drive Spreadsheet named: ' . htmlspecialchars($this->form_info['google_spreadsheet_name']);
 				exit;
 			}
 		}
 		// ensure a Google Drive Spreadsheet was laoded
 		if($spreadSheet===null) {
-			echo "Error!  Unable to load Google Drive Spreadsheet";
+			echo 'Error!  Unable to load Google Drive Spreadsheet';
 			exit;
 		}
 		// load the worksheets in the Google Drive Spreadsheet
@@ -2827,7 +2856,7 @@ class ease_form_handler {
 		if($this->form_info['save_to_sheet']) {
 			$worksheet = $worksheetFeed->getByTitle($this->form_info['save_to_sheet']);
 			if($worksheet===null) {
-				echo "Error!  Unable to load Google Drive Worksheet named: " . htmlspecialchars($this->form_info['save_to_sheet']);
+				echo 'Error!  Unable to load Google Drive Worksheet named: ' . htmlspecialchars($this->form_info['save_to_sheet']);
 				exit;
 			}
 		} else {
@@ -2835,15 +2864,15 @@ class ease_form_handler {
 		}
 		// check for unloaded worksheet
 		if($worksheet===null) {
-			echo "Error!  Unable to load Google Drive Worksheet";
+			echo 'Error!  Unable to load Google Drive Worksheet';
 			exit;
 		}
 		// load the meta data for the sheet
 		if($this->form_info['google_spreadsheet_id']) {
-			// load the Google Drive Spreadsheet by the referenced ID
+			// Google Drive Spreadsheet was referenced by ID
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id'], $this->form_info['save_to_sheet']);
 		} elseif($this->form_info['google_spreadsheet_name']) {
-			// load the Google Drive Spreadsheet by the referenced name
+			// Google Drive Spreadsheet was referenced by "Name"
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($this->form_info['google_spreadsheet_name'], $this->form_info['save_to_sheet']);
 		}
 		// initialize column letter by number array
@@ -2871,6 +2900,7 @@ class ease_form_handler {
 			$cellEntry->setCell($this->form_info['row_number'], $column_number);
 			$cellEntry->update();
 		}
+		// done deleting row from Google Drive Spreadsheet... process any Form Actions		
 		// execute any set cookie or session variable commands for the form action
 		@$this->form_info['set_to_list_by_action'][$action] = array_merge(
 			(array)$this->form_info['set_to_list_by_action'][$action],
@@ -2944,17 +2974,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_create_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $create_sql_record['for']), '_');
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_create_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($create_sql_record_new_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -2970,7 +3001,7 @@ class ease_form_handler {
 							}
 						}
 					}
-					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+					$sql = "	CREATE TABLE `$namespaced_create_for_sql_table_name` (
 									instance_id int NOT NULL PRIMARY KEY auto_increment,
 									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
 									updated_on timestamp NOT NULL,
@@ -2992,7 +3023,7 @@ class ease_form_handler {
 					$insert_columns_sql .= ",`$key`=:$key";
 					$create_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+				$query = $this->core->db->prepare("	REPLACE INTO `$namespaced_create_for_sql_table_name`
 													SET uuid=:uuid
 														$insert_columns_sql;	");
 				$query->execute($create_sql_record_params);
@@ -3044,17 +3075,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_update_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $update_sql_record['for']), '_');
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_update_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($update_sql_record_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($update_sql_record_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -3067,12 +3099,12 @@ class ease_form_handler {
 					$update_columns_sql .= ",`$key`=:$key";
 					$update_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+				$query = $this->core->db->prepare("	UPDATE `$namespaced_update_for_sql_table_name`
 													SET updated_on=NOW()
 														$update_columns_sql
 													WHERE uuid=:uuid;	");
 				$result = $query->execute($update_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
+				// TODO!! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
 			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
@@ -3089,10 +3121,10 @@ class ease_form_handler {
 					// delete record with no referenced record to delete.... hmm...
 					continue;
 				}
+				$namespaced_delete_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $delete_sql_record['for']), '_');
 				// build the query to delete the row
-				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$query = $this->core->db->prepare("DELETE FROM `$namespaced_delete_for_sql_table_name` WHERE uuid=:uuid;");
 				$result = $query->execute($delete_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 		}
 		// execute any redirect commands from form actions
@@ -3111,10 +3143,11 @@ class ease_form_handler {
 	function process_checklist($action) {
 		// only process SQL backed checklist forms if a database connection exists and hasn't been disabled
 		if($this->core->db && !$this->core->db_disabled) {
+			$namespaced_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $this->form_info['sql_table_name']), '_');
 			// query for a list of checkable row IDs
 			$checklist_rows = array();
-			$query = "	SELECT `{$this->form_info['sql_table_name']}`.uuid
-						FROM `{$this->form_info['sql_table_name']}`
+			$query = "	SELECT `$namespaced_sql_table_name`.uuid
+						FROM `$namespaced_sql_table_name`
 							{$this->form_info['join_sql_string']}
 						{$this->form_info['where_sql_string']}
 						{$this->form_info['order_by_sql_string']};	";
@@ -3166,12 +3199,12 @@ class ease_form_handler {
 					}
 				}
 				// validate the referenced SQL table exists by querying for all column names
-				$result = $this->core->db->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{$this->form_info['sql_table_name']}' AND TABLE_SCHEMA=database();");
+				$result = $this->core->db->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='$namespaced_sql_table_name' AND TABLE_SCHEMA=database();");
 				if($existing_columns = $result->fetchAll(PDO::FETCH_COLUMN)) {
 					$all_referenced_columns = array_merge(array_keys($update_column_when_checked), array_keys($update_column_when_unchecked));
 					foreach($all_referenced_columns as $column) {
 						if(!in_array($column, $existing_columns)) {
-							$this->core->db->exec("ALTER TABLE `{$this->form_info['sql_table_name']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+							$this->core->db->exec("ALTER TABLE `$namespaced_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 						}
 					}
 				}
@@ -3180,14 +3213,14 @@ class ease_form_handler {
 					if(isset($_POST['ease_checklist_item_' . $row['uuid']]) && trim($_POST['ease_checklist_item_' . $row['uuid']])!='') {
 						// the row was checked
 						foreach($update_column_when_checked as $column=>$value) {
-							$query = $this->core->db->prepare("UPDATE `{$this->form_info['sql_table_name']}` SET `$column`=:$column WHERE uuid=:uuid;");
+							$query = $this->core->db->prepare("UPDATE `$namespaced_sql_table_name` SET `$column`=:$column WHERE uuid=:uuid;");
 							$params = array(":$column"=>$value, ':uuid'=>$row['uuid']);
 							$result = $query->execute($params);
 						}
 					} else {
 						// the row was NOT checked
 						foreach($update_column_when_unchecked as $column=>$value) {
-							$query = $this->core->db->prepare("UPDATE `{$this->form_info['sql_table_name']}` SET `$column`=:$column WHERE uuid=:uuid;");
+							$query = $this->core->db->prepare("UPDATE `$namespaced_sql_table_name` SET `$column`=:$column WHERE uuid=:uuid;");
 							$params = array(":$column"=>$value, ':uuid'=>$row['uuid']);
 							$result = $query->execute($params);
 						}
@@ -3204,6 +3237,7 @@ class ease_form_handler {
 				}
 			}
 		}
+		// done updating instances in the SQL Table... process any Form Actions
 		// execute any set cookie or session variable commands for the form action
 		@$this->form_info['set_to_list_by_action'][$action] = array_merge(
 			(array)$this->form_info['set_to_list_by_action'][$action],
@@ -3281,17 +3315,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_create_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $create_sql_record['for']), '_');
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$create_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_create_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($create_sql_record_new_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($create_sql_record_new_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$create_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_create_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -3307,7 +3342,7 @@ class ease_form_handler {
 							}
 						}
 					}
-					$sql = "	CREATE TABLE `{$create_sql_record['for']}` (
+					$sql = "	CREATE TABLE `$namespaced_create_for_sql_table_name` (
 									instance_id int NOT NULL PRIMARY KEY auto_increment,
 									created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
 									updated_on timestamp NOT NULL,
@@ -3329,7 +3364,7 @@ class ease_form_handler {
 					$insert_columns_sql .= ",`$key`=:$key";
 					$create_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	REPLACE INTO `{$create_sql_record['for']}`
+				$query = $this->core->db->prepare("	REPLACE INTO `$namespaced_create_for_sql_table_name`
 													SET uuid=:uuid
 														$insert_columns_sql;	");
 				$query->execute($create_sql_record_params);
@@ -3381,17 +3416,18 @@ class ease_form_handler {
 						}
 					}
 				}
+				$namespaced_update_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $update_sql_record['for']), '_');
 				// make sure the SQL Table exists and has all the columns referenced in the new row
-				$result = $this->core->db->query("DESCRIBE `{$update_sql_record['for']}`;");
+				$result = $this->core->db->query("DESCRIBE `$namespaced_update_for_sql_table_name`;");
 				if($result) {
 					// the SQL Table exists; make sure all of the columns referenced in the new row exist in the table
 					$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
 					foreach(array_keys($update_sql_record_row) as $column) {
 						if(!in_array($column, $existing_columns)) {
 							if(sizeof($update_sql_record_row[$column]) > 65535) {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` mediumtext NOT NULL default '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` mediumtext NOT NULL default '';");
 							} else {
-								$this->core->db->exec("ALTER TABLE `{$update_sql_record['for']}` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
+								$this->core->db->exec("ALTER TABLE `$namespaced_update_for_sql_table_name` ADD COLUMN `$column` text NOT NULL DEFAULT '';");
 							}
 						}
 					}
@@ -3404,12 +3440,12 @@ class ease_form_handler {
 					$update_columns_sql .= ",`$key`=:$key";
 					$update_sql_record_params[":$key"] = (string)$value;
 				}
-				$query = $this->core->db->prepare("	UPDATE `{$update_sql_record['for']}`
+				$query = $this->core->db->prepare("	UPDATE `$namespaced_update_for_sql_table_name`
 													SET updated_on=NOW()
 														$update_columns_sql
 													WHERE uuid=:uuid;	");
 				$result = $query->execute($update_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
+				// TODO!! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 			// execute any DELETE RECORD - FOR CLOUD SQL TABLE commands for the form action
 			@$this->form_info['delete_sql_record_list_by_action'][$action] = array_merge(
@@ -3426,10 +3462,10 @@ class ease_form_handler {
 					// delete record with no referenced record to delete.... hmm...
 					continue;
 				}
+				$namespaced_delete_for_sql_table_name = trim(preg_replace('/[^a-z0-9]+/is', '_', $this->core->namespace . '_' . $delete_sql_record['for']), '_');
 				// build the query to delete the row
-				$query = $this->core->db->prepare("DELETE FROM `{$delete_sql_record['for']}` WHERE uuid=:uuid;");
+				$query = $this->core->db->prepare("DELETE FROM `$namespaced_delete_for_sql_table_name` WHERE uuid=:uuid;");
 				$result = $query->execute($delete_sql_record_params);
-				// TODO! check for query errors... the only error could be saving more than 65535 characters in a text type column: ALTER to mediumtext
 			}
 		}
 		// execute any redirect commands from checklist form action

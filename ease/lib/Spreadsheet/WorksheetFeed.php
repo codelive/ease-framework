@@ -13,9 +13,8 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * Lucas Simmons - Added the getFirstSheet function to get the first sheet if no title was returned
  */
+
 namespace Google\Spreadsheet;
 
 /**
@@ -87,6 +86,11 @@ class WorksheetFeed extends \ArrayIterator
 		return null;
 	}
 
+	/**
+	 * Get the first worksheet in the spreadsheet
+	 * 
+	 * @return \Google\Spreadsheet\Worksheet
+	 */
 	public function getFirstSheet() {
 		$worksheet = new Worksheet($this->xml->entry[0]);
 		$worksheet->setPostUrl($this->getPostUrl());

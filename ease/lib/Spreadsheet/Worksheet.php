@@ -13,10 +13,8 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
- * Lucas Simmons - Added ability to sort worksheets
- * 
  */
+
 namespace Google\Spreadsheet;
 
 /**
@@ -145,7 +143,7 @@ class Worksheet
 		$entry = '
 			<entry xmlns="http://www.w3.org/2005/Atom"
 				xmlns:gs="http://schemas.google.com/spreadsheets/2006">
-			  <gs:cell row="' . $row . '" col="' . $col . '" inputValue="' . $value . '"/>
+			  <gs:cell row="' . $row . '" col="' . $col . '" inputValue="' . htmlspecialchars($value, ENT_COMPAT | ENT_XML1, 'UTF-8') . '"/>
 			</entry>
 		';
 		if(is_null($this->editCellPostUrl)) {
@@ -174,7 +172,7 @@ class Worksheet
 			$entry = '
 				<entry xmlns="http://www.w3.org/2005/Atom"
 					xmlns:gs="http://schemas.google.com/spreadsheets/2006">
-				  <gs:cell row="' . $row . '" col="' . $col . '" inputValue="' . $heading . '"/>
+				  <gs:cell row="' . $row . '" col="' . $col . '" inputValue="' . htmlspecialchars($heading, ENT_COMPAT | ENT_XML1, 'UTF-8') . '"/>
 				</entry>
 			';
 			$serviceRequest->getRequest()->setFullUrl($this->getPostUrl());

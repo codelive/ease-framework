@@ -19,8 +19,8 @@
  *
  * @author Mike <mike@cloudward.com>
  */
-class ease_interpreter {
-
+class ease_interpreter
+{
 	public $parser;
 	public $override_url_params;
 	public $core;
@@ -52,7 +52,7 @@ class ease_interpreter {
 				}
 				$key_lower = strtolower($key);
 				// extract any context from the variable reference
-				$context_stack = $this->extract_context_stack($key);
+				$context_stack = ease_interpreter::extract_context_stack($key);
 				if($additional_context!==null) {
 					$context_stack[] = $additional_context;
 				}
@@ -61,6 +61,7 @@ class ease_interpreter {
 				} else {
 					$name = $key;
 				}
+				$name_lower = strtolower($name);
 				// retrieve the value to inject based on the bucket type
 				if($bucket=='session') {
 					if(isset($_SESSION[$key])) {
@@ -79,20 +80,48 @@ class ease_interpreter {
 						$value = '';
 					}
 				} elseif($bucket=='post') {
-					$value = @$_POST[$key];
+					if(isset($_POST[$key])) {
+						$value = $_POST[$key];
+					} elseif(isset($_POST[$key_lower])) {
+						$value = $_POST[$key_lower];
+					} else {
+						$value = '';
+					}
 				} elseif($bucket=='url') {
 					if(is_array($this->override_url_params)) {
-						$value = @$this->override_url_params[$key];
+						if(isset($this->override_url_params[$key])) {
+							$value = $this->override_url_params[$key];							
+						} elseif(isset($this->override_url_params[$key_lower])) {
+							$value = $this->override_url_params[$key_lower];
+						} else {
+							$value = '';
+						}
 					} elseif(isset($_GET[$key])) {
-						$value = $_GET[$key];
+						if(isset($_GET[$key])) {
+							$value = $_GET[$key];
+						} elseif(isset($_GET[$key_lower])) {
+							$value = $_GET[$key_lower];
+						} else {
+							$value = '';
+						}
 					}
 				} elseif($bucket=='request') {
 					if(isset($_REQUEST[$key])) {
 						$value = $_REQUEST[$key];
+					} elseif(isset($_REQUEST[$key_lower])) {
+						$value = $_REQUEST[$key_lower];
+					} else {
+						$value = '';
 					}
 				} elseif($bucket=='config') {
 					if(!$this->core->inject_config_disabled) {
-						$value = @$this->core->config[$key];
+						if(isset($this->core->config[$key])) {
+							$value = $this->core->config[$key];
+						} elseif(isset($this->core->config[$key_lower])) {
+							$value = $this->core->config[$key_lower];
+						} else {
+							$value = '';
+						}
 					} else {
 						$value = '';
 					}
@@ -122,6 +151,8 @@ class ease_interpreter {
 					}
 				} elseif(isset($this->core->globals[$name])) {
 					$value = $this->core->globals[$name];
+				} elseif(isset($this->core->globals[$name_lower])) {
+					$value = $this->core->globals[$name_lower];
 				} elseif($this->core->memcache && (($value = $this->core->memcache->get($name))!==false)) {
 					// this is tricky code to save memory on large cached objects
 					// $value was already set with the value from the cache... done
@@ -151,7 +182,7 @@ class ease_interpreter {
 					}
 				}
 				// apply the context to the value to inject
-				$this->apply_context_stack($value, $context_stack);
+				ease_interpreter::apply_context_stack($value, $context_stack);
 				// inject the value to replace the EASE variable tag
 				return $value;
 			},
@@ -163,14 +194,14 @@ class ease_interpreter {
 			function($matches) use (&$injected, $additional_context) {
 				$injected = true;
 				$key = strtolower($matches[1]);
-				$context_stack = $this->extract_context_stack($key);
+				$context_stack = ease_interpreter::extract_context_stack($key);
 				if($additional_context!==null) {
 					$context_stack[] = $additional_context;
 				}
 				// retrieve the value to inject
 				$value = $this->core->globals["system.$key"];
 				// apply the context to the value to inject
-				$this->apply_context_stack($value, $context_stack);
+				ease_interpreter::apply_context_stack($value, $context_stack);
 				// inject the value to replace the EASE system variable tag
 				return $value;
 			},
@@ -184,7 +215,7 @@ class ease_interpreter {
 		$string = preg_replace_callback(
 			'/' . preg_quote($this->core->ease_block_start, '/') . '\s*(.*?)\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 			function($matches) use ($column_letter_by_name, $cell_value_by_column_letter, $local_variables, $additional_context) {
-				$context_stack = $this->extract_context_stack($matches[1]);
+				$context_stack = ease_interpreter::extract_context_stack($matches[1]);
 				if($additional_context!==null) {
 					$context_stack[] = $additional_context;
 				}
@@ -203,7 +234,7 @@ class ease_interpreter {
 									$value = '';
 								}
 							} else {
-								$column_name = preg_replace('/[^a-z]+/s', '', strtolower(ltrim($ease_variable_parts[1])));
+								$column_name = preg_replace('/(^[0-9]+|[^a-z0-9]+)/s', '', strtolower(ltrim($ease_variable_parts[1])));
 								if(isset($cell_value_by_column_letter[$column_letter_by_name[$column_name]])) {
 									$value = nl2br(htmlspecialchars($cell_value_by_column_letter[$column_letter_by_name[$column_name]]));
 								} else {
@@ -220,7 +251,7 @@ class ease_interpreter {
 								$value = '';
 							}
 						} else {
-							$column_name = preg_replace('/[^a-z]+/s', '', strtolower($matches[1]));
+							$column_name = preg_replace('/(^[0-9]+|[^a-z0-9]+)/s', '', strtolower($matches[1]));
 							if(isset($cell_value_by_column_letter[$column_letter_by_name[$column_name]])) {
 								$value = nl2br(htmlspecialchars($cell_value_by_column_letter[$column_letter_by_name[$column_name]]));
 							} else {
@@ -229,7 +260,7 @@ class ease_interpreter {
 						}
 					}
 				}
-				$this->apply_context_stack($value, $context_stack);
+				ease_interpreter::apply_context_stack($value, $context_stack);
 				return $value;
 			},
 			$string
@@ -241,7 +272,7 @@ class ease_interpreter {
 		$string = preg_replace_callback(
 			'/' . preg_quote($this->core->ease_block_start, '/') . '\s*(.*?)\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 			function($matches) use ($column_letter_by_name, $cells_by_row_by_column_letter, $additional_context) {
-				$context_stack = $this->extract_context_stack($matches[1]);
+				$context_stack = ease_interpreter::extract_context_stack($matches[1]);
 				if($additional_context!==null) {
 					$context_stack[] = $additional_context;
 				}
@@ -263,7 +294,7 @@ class ease_interpreter {
 						}
 					}
 				}
-				$this->apply_context_stack($value, $context_stack);
+				ease_interpreter::apply_context_stack($value, $context_stack);
 				return $value;
 			},
 			$string
@@ -282,7 +313,7 @@ class ease_interpreter {
 					}
 				}
 				$table_column_reference = $matches[1];
-				$context_stack = $this->extract_context_stack($table_column_reference);
+				$context_stack = ease_interpreter::extract_context_stack($table_column_reference);
 				if($additional_context!==null) {
 					$context_stack[] = $additional_context;
 				}
@@ -311,7 +342,7 @@ class ease_interpreter {
 						$value = '';
 					}
 				}
-				$this->apply_context_stack($value, $context_stack);
+				ease_interpreter::apply_context_stack($value, $context_stack);
 				return $value;
 			},
 			$string
@@ -398,9 +429,8 @@ class ease_interpreter {
 						$context_stack[] = array('context'=>$context, 'adjustment_years'=>$adjustment_value * $adjustment_modifier * 1000);
 						break;
 					default:
-						// default adjustment value units to seconds
-						$context_stack[] = array('context'=>$context, 'adjustment_seconds'=>$adjustment_value * $adjustment_modifier);
-						break;
+					// default adjustment value units to seconds
+					$context_stack[] = array('context'=>$context, 'adjustment_seconds'=>$adjustment_value * $adjustment_modifier);
 				}
 			} elseif(($context=='time' || $context=='date' || $context=='pdate' || $context=='phpdate') && isset($matches[8]) && $matches[8]!='') {
 				// the context was a date or time with a format string.  ex:  <# system.timestamp as date "M/D/Y" #>
@@ -649,7 +679,7 @@ class ease_interpreter {
 										$context['format_string'] = substr($context['format_string'], 2);
 										continue;
 									default:
-										// a 2 character replacement token was not found at the start of the remaining format string
+									// a 2 character replacement token was not found at the start of the remaining format string
 								}
 								// check for 1 character replacement tokens at the start of the remaining format string
 								switch(substr($context['format_string'], 0, 1)) {
@@ -694,9 +724,9 @@ class ease_interpreter {
 										$string .= substr($context['format_string'], 1, 1);
 										$context['format_string'] = substr($context['format_string'], 2);
 									default:
-										// a valid token wasn't found, use the raw 1st character
-										$string .= substr($context['format_string'], 0, 1);
-										$context['format_string'] = substr($context['format_string'], 1);
+									// a valid token wasn't found, use the raw 1st character
+									$string .= substr($context['format_string'], 0, 1);
+									$context['format_string'] = substr($context['format_string'], 1);
 								}
 							}
 							break;

@@ -1,0 +1,400 @@
+﻿<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<head lang="en">
+	<meta http-equiv="content-type" content="text/html;charset=utf-8">
+	<title>iCarousel v1.2.2</title>
+	<!-- Framework CSS -->
+	<link rel="stylesheet" href="assets/blueprint-css/screen.css" type="text/css" media="screen, projection">
+	<link rel="stylesheet" href="assets/blueprint-css/print.css" type="text/css" media="print">
+	<!--[if lt IE 8]><link rel="stylesheet" href="assets/blueprint-css/ie.css" type="text/css" media="screen, projection"><![endif]-->
+	<link rel="stylesheet" href="assets/blueprint-css/plugins/fancy-type/screen.css" type="text/css" media="screen, projection">
+	<script type="text/javascript" src="syntaxhighlighter/scripts/shCore.js"></script>
+
+	<script type="text/javascript" src="syntaxhighlighter/scripts/shAutoloader.js"></script>
+
+	<script type="text/javascript" src="syntaxhighlighter/scripts/shBrushJScript.js"></script>
+
+	<script type="text/javascript" src="syntaxhighlighter/scripts/shBrushXml.js"></script>
+
+	<script type="text/javascript" src="syntaxhighlighter/scripts/shBrushPlain.js"></script>
+
+	<script type="text/javascript" src="syntaxhighlighter/scripts/shBrushCss.js"></script>
+
+	<link type="text/css" rel="stylesheet" href="syntaxhighlighter/styles/shCoreDefault.css"/>
+	<script type="text/javascript">SyntaxHighlighter.all();</script>
+	<style type="text/css" media="screen">
+		p, table, hr, .box { margin-bottom:25px; }
+		.box p { margin-bottom:10px; }
+	</style>
+</head>
+
+
+<body>
+	<div class="container">
+	
+		<h3 class="center alt">&ldquo;iCarousel&rdquo; Documentation by &ldquo;Hemn Chawroka&rdquo; v1.2.2</h3>
+		
+		<hr>
+		
+		<h1 class="center">&ldquo;iCarousel&rdquo;</h1>
+		
+		<div class="borderTop">
+			<div class="span-6 colborder info prepend-1">
+				<p class="prepend-top">
+					<strong>
+					Created: 15/06/2012<br>
+					By: Hemn Chawroka<br>
+					Profile: <a href="http://codecanyon.net/user/hemn">CodeCanyon</a>
+					</strong>
+				</p>
+			</div><!-- end div .span-6 -->		
+	
+			<div class="span-12 last">
+				<p class="prepend-top append-0">Thank you for purchasing my script. If you have any questions that are beyond the scope of this help file, please feel free to email via my user page contact form <a href="http://codecanyon.net/user/hemn">here</a>. Thanks so much!</p>
+			</div>
+		</div><!-- end div .borderTop -->
+		
+		<hr>
+		
+		<h2 id="toc" class="alt">Table of Contents</h2>
+		<ol class="alpha">
+			<li><a href="#htmlStructure">HTML Structure</a></li>
+			<li><a href="#cssFiles">CSS Files and Structure</a></li>
+			<li><a href="#javascript">JavaScript</a></li>
+			<li><a href="#changelog">Changelog</a></li>
+		</ol>
+		
+		<hr>
+		
+		<h3 id="htmlStructure"><strong>A) HTML Structure</strong> - <a href="#toc">top</a></h3>
+<p>We start of with a simple HTML5 document that will be the backbone of our example.</p>
+<pre class="brush: xml; toolbar: false; auto-links: false;">
+&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+	&lt;head&gt;
+		&lt;title&gt;iCarousel&lt;/title&gt;
+		&lt;meta name="viewport" content="width=1024, initial-scale=1, maximum-scale=1"&gt;
+
+		<!-- Our stylesheet -->
+		&lt;link rel="stylesheet" href="css/reset.css" /&gt;
+		&lt;link rel="stylesheet" href="css/styles.css" /&gt;
+		&lt;link rel="stylesheet" href="css/icarousel.css" /&gt;
+		&lt;link rel="stylesheet" href="css/demo1.css" /&gt;
+
+		<!-- JavaScript includes -->
+		&lt;script src="js/jquery-1.7.1.min.js"&gt;&lt;/script&gt;
+		&lt;script src="js/raphael-min.js"&gt;&lt;/script&gt;
+		&lt;script src="js/jquery.mousewheel.js"&gt;&lt;/script&gt;
+		&lt;script src="js/icarousel.packed.js"&gt;&lt;/script&gt;
+
+		<!-- iCarousel script starter Section -->
+		&lt;script&gt;
+			$(document).ready(function(){
+				$('#icarousel').iCarousel();
+			});
+		&lt;/script&gt;
+	&lt;/head&gt;
+	&lt;body&gt;
+
+		&lt;!-- BEGIN CONTAINER --&gt;
+		&lt;div class="carousel-container"&gt;
+
+			&lt;!-- BEGIN #icarousel element container --&gt;
+			&lt;div id="icarousel"&gt;
+
+				&lt;!-- The Slides Will Go Here --&gt;
+
+			&lt;/div&gt;
+			&lt;!-- END #icarousel element container --&gt;
+
+		&lt;/div&gt;
+		&lt;!-- END CONTAINER --&gt;
+
+	&lt;/body&gt;
+&lt;/html&gt;
+</pre>
+<p>Nothing unusual here. We have our main stylesheet (we will go back to it in the next section) and a number of JavaScript source files before the closing head tag.</p>
+
+<p>The #icarousel div will hold the slides. The id is required in order to be recognized by icarousel.js.</p>
+
+<pre class="brush: xml; toolbar: false; auto-links: false;">
+&lt;div id="icarousel"&gt;
+
+	&lt;!-- The Slides Will Go Here --&gt;
+
+&lt;/div&gt;
+</pre>
+
+<p>With this plugin, we can create smooth CSS3 transitions between the slides of our slider. To do this, we have to instruct iCarousel on how to orient the slides. This is easy to do - we will use data attributes on the slides.</p>
+
+<ol>
+  <li><b>data-easing</b> - easing timing function <i>(custom cubic-bezier function is acceptable)</i>:
+      <dd>- linear</dd>
+      <dd>- ease</dd>
+      <dd>- ease-in</dd>
+      <dd>- ease-out</dd>
+      <dd>- ease-in-out</dd>
+      <dd>- ease-out-in</dd>
+      <dd>- easeInQuad</dd>
+      <dd>- easeOutQuad</dd>
+      <dd>- easeInOutQuad</dd>
+      <dd>- easeInCubic</dd>
+      <dd>- easeOutCubic</dd>
+      <dd>- easeInOutCubic</dd>
+      <dd>- easeInQuart</dd>
+      <dd>- easeOutQuart</dd>
+      <dd>- easeInOutQuart</dd>
+      <dd>- easeInQuint</dd>
+      <dd>- easeOutQuint</dd>
+      <dd>- easeInOutQuint</dd>
+      <dd>- easeInSine</dd>
+      <dd>- easeOutSine</dd>
+      <dd>- easeInOutSine</dd>
+      <dd>- easeInExpo</dd>
+      <dd>- easeOutExpo</dd>
+      <dd>- easeInOutExpo</dd>
+      <dd>- easeInCirc</dd>
+      <dd>- easeOutCirc</dd>
+      <dd>- easeInOutCirc</dd>
+      <dd>- easeInBack</dd>
+      <dd>- easeOutBack</dd>
+      <dd>- easeInOutBack</dd>
+  </li>
+  <li><b>data-pausetime</b> - how long the slide will show;</li>
+  <li><b>data-thumbnail</b> - the url of the thumbnail;</li>
+</ol>
+
+<p>You can see the markup for the slides below:</p>
+
+<pre class="brush: xml; toolbar: false; auto-links: false;">
+<!-- The first slide retains its default options. We could omit the data attributes -->
+&lt;div class="slide"&gt;
+	&lt;img src="photos/photo1.jpg" /&gt;
+&lt;/div&gt;
+
+<!-- We are timing the second slide -->
+&lt;div class="slide" data-pausetime="1000"&gt;
+	&lt;img src="photos/photo2.jpg" /&gt;
+&lt;/div&gt;
+
+<!-- We are easing the third slide -->
+&lt;div class="slide" data-easing="easeInOutQuint"&gt;
+	&lt;img src="photos/photo3.jpg" /&gt;
+&lt;/div&gt;
+</pre>
+		<hr>
+
+		<h3 id="cssFiles"><strong>B) CSS Files and Structure</strong> - <a href="#toc">top</a></h3>
+
+		<p>I'm using four CSS files in this sample. The first one contains some general styling, such as anchor tag colors, font-sizes, etc. Keep in mind, that these values might be overridden somewhere else in the file.</p> 
+
+		<p>The second file contains all of the specific stylings for the page.</p>
+
+		<p>The third file contains all of the icarousel general stylings. The file is separated into sections using:</p>
+
+<pre class="brush: css; toolbar: false;">
+/* === Preloader Section === */
+
+	div#icarousel div#iCarousel-preloader {
+		some styles
+	}
+
+	div#icarousel div#iCarousel-preloader div {
+		some styles
+	}
+
+/* === Slides Section === */
+	
+	div#icarousel div.slide {
+		some styles
+	}
+	
+/* === Control Navigation Section === */
+
+	/* = General = */
+	div#icarousel a.iCarouselNav {
+		some styles
+	}
+
+	/* = Next Button = */
+	div#icarousel a#iCarouselPrev {
+		some styles
+	}
+
+	/* = Previous Button = */
+	div#icarousel a#iCarouselPrev {
+		some styles
+	}
+	
+/* === Playback === */
+
+	/* = General = */
+	div#icarousel div#iCarousel-timer {
+		some styles
+	}
+
+	/* = When its playing = */
+	div#icarousel div#iCarousel-timer.play {
+		some styles
+	}
+
+	/* = When its paused = */
+	div#icarousel div#iCarousel-timer.pause {
+		some styles
+	}
+</pre>
+
+		<p>Any images that are placed within the slides section can be customizable. If you would like to edit the display of these images, find the following section in the style sheet:</p>
+
+<pre class="brush: css; toolbar: false;">
+	div#icarousel div.slide img {
+		change styles here
+	}
+</pre>
+
+		<hr>
+		
+		<h3 id="javascript"><strong>C) JavaScript</strong> - <a href="#toc">top</a></h3>
+		
+		<p>This script imports four Javascript files.</p>
+		
+		<ol>
+			<li>jQuery : jQuery is a Javascript library that greatly reduces the amount of code that you must write.</li>
+			<li>Raphaël : Raphaël is a small JavaScript library that should simplify your work with vector graphics on the web.</li>
+			<li>jQuery Mouse Wheel</li>
+			<li>iCarousel</li>
+		</ol>
+		  
+		<p>For start iCarousel add the following section in the javascript tag:</p>
+
+<pre class="brush: js; toolbar: false;">
+	$(document).ready(function(){
+		$('#icarousel').iCarousel();
+	});
+</pre>
+
+		<p>Many options available for customize the iCarousel:</p>
+
+<pre class="brush: js; toolbar: false;">
+	$(document).ready(function(){
+		$('#icarousel').iCarousel({
+			easing: 'ease-in-out', // Easing timing (custom cubic-bezier function is acceptable)
+			slides: 3, // How many slides will be shown (Must be an odd number)
+			make3D: true, // To Enable or Disable 3D effect.
+			perspective: 35, // The 3D perspective option. (Min 0 & Max 100);
+			animationSpeed: 500, // Slide transition speed (Microsecond)
+			pauseTime: 5000, // How long each slide will show (Microsecond)
+			startSlide: 0, // Set starting Slide (0 index)
+			directionNav: true, // Next & Previous navigation
+			autoPlay: true, // To Enable or Disable the autoplay
+			keyboardNav: true, // To Enable or Disable the keyboard navigation
+			touchNav: true, // To Enable or Disable the touch navigation
+			mouseWheel: true, // To Enable or Disable the mousewheel navigation
+			pauseOnHover: false, // To Enable or Disable the carousel when mouse come over it
+			randomStart: false, // Start on a random slide
+			slidesSpace: 'auto', // Spaces between slides
+			slidesTopSpace: 'auto', // Top Space for the slides
+			direction: 'rtl', // Carousel direction when change (right-to-left) set like: 'rtl'
+			timer: 'Pie', // Timer style: "Pie", "360Bar" or "Bar"
+			timerBg: '#000', // Timer background
+			timerColor: '#EEE', // Timer color
+			timerOpacity: 0.5, // Timer opacity
+			timerDiameter: 30, // Timer diameter
+			timerPadding: 4, // Timer padding
+			timerStroke: 3, // Timer stroke width
+			timerBarStroke: 1, // Timer Bar stroke width
+			timerBarStrokeColor: '#EEE', // Timer Bar stroke color
+			timerBarStrokeStyle: 'solid', // Timer Bar stroke style
+			timerBarStrokeRadius: 4, // Timer Bar stroke radius
+			timerPosition: 'top-right', // Timer position (top,middle,bottom)-(left-center-right) set like: 'middle-center'
+			timerX: 10, // Timer X position threshold
+			timerY: 10, // Timer Y position threshold
+			nextLabel: "Next", // To set the string of the next button (Multilanguage use)
+			previousLabel: "Previous", // To set the string of the previous button (Multilanguage use)
+			playLabel: "Play", // To set the string of the play button (Multilanguage use)
+			pauseLabel: "Pause", // To set the string of the pause button (Multilanguage use)
+			onBeforeChange: function(){}, // Triggers before a slide change
+			onAfterChange: function(){}, // Triggers after a slide change
+			onLastSlide: function(){}, // Triggers when last slide is shown
+			onAfterLoad: function(){}, // Triggers when carousel has loaded
+			onPause: function(){}, // Triggers when carousel has paused
+			onPlay: function(){} // Triggers when carousel has played
+		});
+	});
+</pre>
+		<h3>Some API</h3>
+		<p><b>How to pause and play the carousel?</b></p>
+		
+<pre class="brush: js; toolbar: false; auto-links: false;">
+$('#icarousel').trigger('iCarousel:pause'); //Stop the Slider
+$('#icarousel').trigger('iCarousel:play'); //Start the Slider
+</pre>
+		
+		<p><b>How to change slide?</b></p>
+		
+<pre class="brush: js; toolbar: false; auto-links: false;">
+$('#icarousel').trigger('iCarousel:goSlide', [2]); //Go to slide 2
+</pre>
+		
+		<p><b>How to next and previous the slider?</b></p>
+		
+<pre class="brush: js; toolbar: false; auto-links: false;">
+$('#icarousel').trigger('iCarousel:previous'); //Go to previous slide
+$('#icarousel').trigger('iCarousel:next'); //Go to next slide
+</pre>
+		
+		<p><b>How to set a random starting slide?</b></p>
+		
+<pre class="brush: js; toolbar: false; auto-links: false;">
+var total = $('#icarousel').children().length;
+var rand = Math.floor(Math.random()*total);
+$('#icarousel').iCarousel({
+	startSlide:rand
+});
+</pre>
+		
+		<hr>
+		
+		<h3 id="changelog"><strong>D) Changelog</strong> - <a href="#toc">top</a></h3>
+		
+		<p><b>Version 1.2.2</b></p>
+		
+<pre class="brush: plain; toolbar: false; auto-links: false;">
+2012-07-04 Hemn Chawroka
+	* Fixed jQuery fallback animation bugs.
+	* Fixed some bugs.
+</pre>
+		
+		<p><b>Version 1.2</b></p>
+		
+<pre class="brush: plain; toolbar: false; auto-links: false;">
+2012-07-04 Hemn Chawroka
+	* Added jQuery fallback animation.
+	* Added easing for jQuery fallback animation.
+	* Fixed some bugs.
+</pre>
+		<p><b>Version 1.1</b></p>
+		
+<pre class="brush: plain; toolbar: false; auto-links: false;">
+2012-06-15 Hemn Chawroka
+	* Added mousewheel navigation.
+	* Added 3D or 2D method.
+	* Added 3D perpective option.
+	* Fixed some bugs.
+	* Added slides top space option.
+	* Added easing option.
+	* Added easing timing methods.
+	* Added each slide pausetime option.
+	* Added scroll direction option.
+</pre>
+		
+		<hr>
+		
+		<p>Once again, thank you so much for purchasing this script. As I said at the beginning, I'd be glad to help you if you have any questions relating to this script.</p> 
+		
+		<p class="append-bottom alt large"><strong>Hemn Chawroka</strong></p>
+		<p><a href="#toc">Go To Table of Contents</a></p>
+		
+		<hr class="space">
+	</div><!-- end div .container -->
+</body>
+</html>
