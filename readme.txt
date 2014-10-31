@@ -74,6 +74,7 @@ The EASE Framework connects to your local database. If your hosting provider loc
 6. Our Helper script library has applications like a membership site
 7. EASE is Powerful - we even built a CRM from it
 8. And EASE is easy to learn and use
+9. Installation Wizard helps get you started fast
 
 == Changelog ==
 = 0.1.0 =
