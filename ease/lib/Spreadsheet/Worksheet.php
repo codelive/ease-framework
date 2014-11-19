@@ -95,25 +95,21 @@ class Worksheet
 	 * 
 	 * @return \Google\Spreadsheet\ListFeed
 	 */
-	public function getListFeed($sort_order='', $sort_column='') {
+	public function getListFeed($sort_order='', $sort_column='', $query='') {
 		$serviceRequest = ServiceRequestFactory::getInstance();
 		$list_feed_url = $this->getListFeedUrl();
-		$sort_string = "";
-		// reverse = descending
-		if($sort_order=="DESC") {
-			$sort_order = "reverse=true";
-			$sort_string = "?" . $sort_order;
+		$query_string = '';
+		if(strtoupper($sort_order)=='DESC') {
+			$query_string .= ($query_string=='' ? '?' : '&') . 'reverse=true';
 		}
-		if($sort_column) {
-			$sort_column = "orderby=" . $sort_column;
-			if($sort_string) {
-				$sort_string .= "&" . $sort_column;
-			} else {
-				$sort_string = "?" . $sort_column;
-			}
+		if($sort_column!='') {
+			$query_string .= ($query_string=='' ? '?' : '&') . 'orderby=' . rawurlencode($sort_column);
 		}
-		if($sort_string) {
-			$list_feed_url .= $sort_string;
+		if($query!='') {
+			$query_string .= ($query_string=='' ? '?' : '&') . 'sq=' . rawurlencode($query);
+		}
+		if($query_string!='') {
+			$list_feed_url .= $query_string;
 		}
 		$serviceRequest->getRequest()->setFullUrl($list_feed_url);
 		$res = $serviceRequest->execute();

@@ -15,7 +15,7 @@
 */
 
 /**
- * Parser for use with the EASE Core to process EASE & PHP code
+ * Parser used by the EASE Framework to process EASE
  *
  * @author Mike <mike@cloudward.com>
  */
@@ -28,13 +28,16 @@ class ease_parser
 	public $output_buffer = '';
 	public $errors = array();
 	public $local_variables = array();
+	// these functions are made globally callable by PHP in EASE
 	public $php_functions = array(
-		'ease_get_value', 'ease_set_value', 'ease_process', 'ease_html_dump',
+		'ease_get_value', 'ease_set_value', 'ease_process', 'ease_html_dump', 'ease_new_uuid',
 		'ease_db_query', 'ease_db_query_params', 'ease_db_exec', 'ease_db_error',
 		'ease_db_fetch', 'ease_db_fetch_all', 'ease_db_fetch_column',
 		'ease_db_create_instance', 'ease_db_set_instance_value',
-		'ease_db_get_instance', 'ease_db_get_instance_value',
-		'ease_insert_row_into_spreadsheet_by_id', 'ease_insert_row_into_spreadsheet_by_name',
+		'ease_db_get_instance', 'ease_db_get_instance_value', 'ease_db_ensure_table_columns',
+		'ease_insert_row_into_googlesheet_by_id', 'ease_insert_row_into_googlesheet_by_name',
+		'ease_update_row_in_googlesheet_by_id', 'ease_update_row_in_googlesheet_by_name',
+		'ease_delete_row_from_googlesheet_by_id', 'ease_delete_row_from_googlesheet_by_name',
 		'ease_empty_bucket', 'ease_array_to_bucket', 'ease_bucket_to_array'
 	);
 
@@ -45,20 +48,20 @@ class ease_parser
 	}
 
 	/**
-	 * Process a body of text as EASE
+	 * Process a provided body of text as EASE
 	 * 
 	 * @param $body string - text to process
 	 * @param $return_output_buffer boolean default false - set to true to return the response rather than append it to the output buffer
 	*/
 	function process($body, $return_output_buffer=false) {
-		// ensure an EASE Interpreter has been initiated for injecting EASE variables and applying contexts
+		// ensure an EASE Interpreter has been initiated for injecting EASE variable values and applying contexts
 		if($this->interpreter===null) {
 			require_once 'ease/interpreter.class.php';
 			$this->interpreter = new ease_interpreter($this, $this->override_url_params);
 		}
 		// if the debug flag is set, cache the original version of the body so it can be included in the response
 		// debug is only available on non-production environments
-		if($this->core->environment!='PROD' && @$_REQUEST['debug']) {
+		if($this->core->environment!='PROD' && isset($_REQUEST['debug']) && $_REQUEST['debug']) {
 			$original_body = $body;
 		}
 		// initialize a buffer to hold the remaining body to be processed
@@ -120,7 +123,7 @@ class ease_parser
 			}
 			// scan the line for the start sequence of EASE
 			if(!preg_match('/(.*?)(' . preg_quote($this->core->ease_block_start, '/') . '\s*([^\s\[\'"].*|$))/i', $body_line)) {
-				// start sequence of EASE was not found... inject global variables then check again
+				// start sequence of EASE was NOT found... inject global variables then check again
 				$this->interpreter->inject_global_variables($body_line);
 			}
 			while(preg_match('/(.*?)(' . preg_quote($this->core->ease_block_start, '/') . '\s*([^\s\[\'"].*|$))/i', $body_line, $matches)) {
@@ -149,18 +152,23 @@ class ease_parser
 				// remove the line from the remaining unprocessed body
 				$this->unprocessed_body = substr($this->unprocessed_body, $new_line_position);
 			}
-			// process the next line of the remaining unprocessed body, injecting EASE variables and processing EASE & PHP code
+			// process the next line of the remaining unprocessed body
 			continue;
 		}
 		// DEBUG INFO - only shown on non-production servers where the debug flag was set
-		if($this->core->environment!='PROD' && @$_REQUEST['debug']) {
-			echo "original body:<br />\n";
-			echo "<pre style='margin-top:4px;'><div style='margin-left:10px; padding:2px; border:1px solid #000000;'>" . htmlspecialchars($original_body) . "</div></pre>";
-			echo "processed response:<br />\n";
-			echo "<pre style='margin-top:4px;'><div style='margin-left:10px; padding:2px; border:1px solid #000000;'>" . htmlspecialchars($this->output_buffer) . "</div></pre>";
-			echo "now dumping raw processed response...<hr />";
+		if($this->core->environment!='PROD' && isset($_REQUEST['debug']) && $_REQUEST['debug']) {
+			// debug was requested... dump both the original EASE, and the generated response, as HTML
+			$this->output_buffer = "original EASE:<br />\n"
+			 . "<pre style='margin-top:4px;'><div style='margin-left:10px; padding:2px; border:1px solid #000000; background-color:#FFCCCC;'>"
+			 . htmlspecialchars($original_body)
+			 . "</div></pre>generated response:<br />\n"
+			 . "<pre style='margin-top:4px;'><div style='margin-left:10px; padding:2px; border:1px solid #000000; background-color:#CCFFCC;'>"
+			 . htmlspecialchars($this->output_buffer)
+			 . "</div></pre><hr style='border:0px; border-top:1px dashed #C0C0C0; height:1px; margin-top:6px; margin-bottom:10px; width:95%;' />"
+			 . ((count($this->errors) > 0) ? 'EASE PARSE ERRORS: <pre> ' . htmlspecialchars(print_r($this->errors, true)) . '</pre>' : '')
+			 . $this->output_buffer;
 		}
-		// done processing, either return the generated response or dump it to output
+		// done processing... either return the generated response or echo it
 		if($return_output_buffer) {
 			return $this->output_buffer;
 		} else {
@@ -168,16 +176,16 @@ class ease_parser
 		}
 	}
 
-	// this function should only be called when $this->unprocessed_body begins with an EASE start sequence
+	// this function should only be called when $this->unprocessed_body begins with the start sequence for EASE
 	function process_ease_block() {
-		// continue processing as long as the EASE Block has content remaining
+		// continue processing any remaining commands in the EASE Block
 		while(true) {
 			// check for an EASE tag containing only whitespace
 			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
 				return;
 			}
-			// check for a multi-line EASE comment
+			// check for a multi-line EASE comment tag
 			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*:(.*?):\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 				// remove the multi-line EASE comment from the unprocessed body
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
@@ -202,35 +210,35 @@ class ease_parser
 				$this->interpreter->apply_context_stack($value, $context_stack);
 				// inject the contextual value into the output buffer
 				$this->output_buffer .= $value;
-				// remove the SYSTEM VARIABLE INJECTION block from the remaining unprocessed body
+				// remove the SYSTEM VARIABLE INJECTION tag from the remaining unprocessed body
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
 				return;
 			}
 
 			###############################################
 			##	START TIMER - only works as standalone tag
-			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+timer\s*[\.;]{0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
+			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*start\s+timer\s*[\.;]{0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '\s*/is', $this->unprocessed_body, $matches)) {
 				$time = explode(' ', microtime());
 				$this->core->globals['system.timer_start'] = $time[1] + $time[0];
-				// remove the START TIMER block from the remaining unprocessed body
+				// remove the START TIMER tag from the remaining unprocessed body
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
 				return;
 			}
 
 			###############################################
 			##	PRINT TIMER - only works as standalone tag
-			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*print\s+timer\s*[\.;]{0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
+			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*print\s+timer\s*[\.;]{0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '\s*/is', $this->unprocessed_body, $matches)) {
 				$time = explode(' ', microtime());
 				$end_time = $time[1] + $time[0];
 				// inject the elapsed time into the output buffer as seconds
 				$this->output_buffer .= number_format($end_time - $this->core->globals['system.timer_start'], 5, '.', ',') . ' seconds';
-				// remove the PRINT TIMER block from the remaining unprocessed body
+				// remove the PRINT TIMER tag from the remaining unprocessed body
 				$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
 				return;
 			}
 
 			###############################################
-			##	PRINT "QUOTED-STRING"
+			##	PRINT "QUOTED-STRING" - optional AS CONTEXT
 			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*print\s*"(.*?)"(\s*[^\.;]*[\.;]{0,1})\s*/is', $this->unprocessed_body, $matches)) {
 				// inject any global variables into the value to print
 				$this->interpreter->inject_global_variables($matches[1]);
@@ -247,7 +255,7 @@ class ease_parser
 			}
 
 			###############################################
-			##	GRANT / REVOKE ACCESS
+			##	GRANT ACCESS / REVOKE ACCESS
 			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*(grant|give|permit|allow|revoke)\s*access\s*to\s+([^;]+?)\s*([;]{0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '|;)\s*/is', $this->unprocessed_body, $matches)) {
 				// inject any global variables into the session.key lock reference
 				$this->interpreter->inject_global_variables($matches[2]);
@@ -266,27 +274,37 @@ class ease_parser
 		
 			###############################################
 			##	RESTRICT ACCESS - only works as standalone tag
-			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*restrict\s*access\s*to\s+([^;]+?)\s*using\s*(.*?)\s*[\.;]{0,1}\s*(?<!' . preg_quote($this->core->global_reference_end, '/') . ')\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
+			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*restrict\s*(referring\s*page\s*|referrer\s*|)access\s*to\s+([^;]+?)\s*using\s*(.*?)\s*[\.;]{0,1}\s*(?<!' . preg_quote($this->core->global_reference_end, '/') . ')\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 				// inject any global variables into the session.key lock reference, and login page
-				$this->interpreter->inject_global_variables($matches[1]);
-				$matches[1] = trim(preg_replace('/[^a-z0-9]+/is', '_', strtolower($matches[1])), '_');
-				if(!isset($_SESSION['ease_memberships.' . $matches[1]]) || !$_SESSION['ease_memberships.' . $matches[1]]) {
-					// the current user is restricted from accessing this page any further, redirect to an authentication page or the homepage
-					$this->interpreter->inject_global_variables($matches[2]);
-					// add the restricted page URL to the query string of the access handler page URL
-					$matches[2] .= (strpos($matches[2], '?')===false ? '?' : '&') . 'restricted_page=' . urlencode($_SERVER['REQUEST_URI']);
+				$this->interpreter->inject_global_variables($matches[2]);
+				$matches[2] = trim(preg_replace('/[^a-z0-9]+/is', '_', strtolower($matches[2])), '_');
+				if(!isset($_SESSION['ease_memberships.' . $matches[2]]) || !$_SESSION['ease_memberships.' . $matches[2]]) {
+					// the current user is restricted from accessing this page any further... redirect to the authentication page URL
+					$this->interpreter->inject_global_variables($matches[3]);
+					// add the restricted page URL to the query string of the authentication page URL
+					if(trim($matches[1])=='') {
+						// use the current request URI as the restricted page
+						$restricted_page = 'restricted_page=' . urlencode($_SERVER['REQUEST_URI']);						
+					} else {
+						// the referring page was requested to be restricted... 
+						// this is used by modularized web pages loading restricted content via AJAX in HTML (Snippets)
+						$restricted_page = 'restricted_page=' . urlencode($this->core->globals['system.referrer']);						
+					}
+					$matches[3] .= ((strpos($matches[3], '?')===false) ? '?' : '&') . $restricted_page;
+					// redirect to the authentication page URL containing the restricted page URL
 					if($this->core->catch_redirect) {
 						// EASE Framework configured to catch redirects
-						$this->core->redirect = $matches[2];
-						// halt processing anything after the redirect
+						$this->core->redirect = $matches[3];
+						// don't process anything after the redirect
 						$this->unprocessed_body = '';
 						return;
 					} else {
 						// redirect to the Location URI for the authentication page, halting all further processing of this request
-						header('Location: ' . $matches[2]);
+						header('Location: ' . $matches[3]);
 						exit;
 					}
 				} else {
+					// the user has been granted access
 					// remove the RESTRICT tag from the remaining unprocessed body
 					$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
 					return;
@@ -362,7 +380,7 @@ class ease_parser
 					// the include path will be treated as a file path, and isn't doubly including the local header.espx or footer.espx
 					$include_file_path = str_replace('/', DIRECTORY_SEPARATOR, $matches[1]);
 					if(substr($matches[1], 0, 1)=='/' && file_exists($this->core->application_root . $include_file_path)) {
-						$included_file_content = file_get_contents($this->core->application_root . $include_file_path);
+						$included_file_content = @file_get_contents($this->core->application_root . $include_file_path);
 					} else {
 						$included_file_content = @file_get_contents($include_file_path, FILE_USE_INCLUDE_PATH);
 					}
@@ -472,7 +490,7 @@ class ease_parser
 								$css_scope = $this->core->new_uuid();
 								$css_scope = 'ease_' . substr($css_scope, 0, 11);
 								$file_content_html_matches[2] = preg_replace_callback(
-									'@(.*?)\{(.*?)\}@is', 
+									'@([^;]*?)\{(.*?)\}@is', 
 									function($matches) use ($css_scope) {
 										if($matches[1]=='.title') {
 											$matches[2] = str_replace('text-align:left;', '', $matches[2]);
@@ -490,23 +508,23 @@ class ease_parser
 									$file_content_html_matches[3]
 								);
 								$file_content = "<div id='$css_scope'><style{$file_content_html_matches[1]}>{$file_content_html_matches[2]}</style>{$file_content_html_matches[3]}</div>";
-							}
+							}							
 							if($process_doc) {
 								// find any EASE start or end sequences that might have been HTML encoded, and convert them back
 								// prepend the result to the unprocessed body, then return
 								$this->unprocessed_body = preg_replace(array('/' . preg_quote(htmlspecialchars($this->core->ease_block_start), '/') . '/', '/' . preg_quote(htmlspecialchars($this->core->ease_block_end), '/') . '/'), array($this->core->ease_block_start, $this->core->ease_block_end), $file_content) . $this->unprocessed_body;
 							} else {
-								// the Google Doc was not set to be processed, so append the file content to the output buffer
+								// the Google Doc was NOT set to be processed, so append the file content to the output buffer
 								$this->output_buffer .= $file_content;
 							}
 						} else {
-							// Google Doc was not requested to be stripped of the HTML container
+							// Google Doc was NOT requested to be stripped of the HTML container
 							if($process_doc) {
 								// find any EASE start or end sequences that might have been HTML encoded, and convert them back
 								// prepend the result to the unprocessed body, then return
 								$this->unprocessed_body = preg_replace(array('/' . preg_quote(htmlspecialchars($this->core->ease_block_start), '/') . '/', '/' . preg_quote(htmlspecialchars($this->core->ease_block_end), '/') . '/'), array($this->core->ease_block_start, $this->core->ease_block_end), $http_request->getResponseBody()) . $this->unprocessed_body;
 							} else {
-								// the Google Doc was not set to be processed, so append the file content to the output buffer
+								// the Google Doc was NOT set to be processed, so append the file content to the output buffer
 								$this->output_buffer .= $http_request->getResponseBody();
 							}
 						}
@@ -606,7 +624,7 @@ class ease_parser
 				} else {
 					$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
 				}	
-				// only import the spreadsheet if the DB hasn't been disabled
+				// only import the Google Sheet if the DB hasn't been disabled
 				if(!$this->core->db_disabled) {
 					// load the sheet meta data
 					if($spreadsheet_name) {
@@ -709,7 +727,7 @@ class ease_parser
 									}
 									$query_param_map_sql .= ", `{$sheet_column_letter_to_sql_column_map[$column_letter]}`=:$column_letter";
 								} else {
-									// this column has not been mapped... default to map to column with same name
+									// this column has NOT been mapped... default to map to column with same name
 									if(!in_array($column_header, $this->core->reserved_sql_columns) && !isset($created_sql_columns[$column_header])) {
 										$create_columns_sql .= ", `$column_header` text NOT NULL default ''";
 										$created_sql_columns[$column_header] = true;
@@ -749,7 +767,7 @@ class ease_parser
 								);	";
 						$this->core->db->exec($sql);
 					}
-					// process each row in the spreadsheet to insert a new record in the SQL Table
+					// process each row in the Google Sheet to insert a new record in the SQL Table
 					if($uuid_column) {
 						// the "EASE Row ID" column was set in the sheet, use that as the primary key
 						$query = $this->core->db->prepare("REPLACE INTO `$namespaced_sql_table_name` SET uuid=:$uuid_column $query_param_map_sql;");
@@ -850,7 +868,7 @@ class ease_parser
 							$column_names[] = '';
 							$column_count++;
 						}
-						// add column for unique row ID used by the EASE core to enable row update and delete
+						// add column for unique EASE Row ID used by the EASE core to enable row update and delete
 						$sheet_csv .= $prefix . '"EASE Row ID"';
 						$column_names[] = 'uuid';
 						$column_count++;
@@ -1062,6 +1080,7 @@ class ease_parser
 						continue;
 					}
 				}
+				// check if a matching folder was found
 				if(isset($files['items']) && is_array($files['items']) && count($files['items']) > 0) {
 					foreach($files['items'] as $matching_folder) {
 						foreach($matching_folder['parents'] as $matching_folder_parent) {
@@ -1153,7 +1172,7 @@ class ease_parser
 						$set_value = $matches[2];
 					}
 				} else {
-					// the value was not enclosed in double quotes, and could not be processed as a math expression
+					// the value was NOT enclosed in double quotes, and could NOT be processed as a math expression
 					// treat the value as a string.
 					$set_value = $matches[2];
 				}
@@ -1288,7 +1307,7 @@ class ease_parser
 				if($this->core->catch_redirect) {
 					// EASE Framework configured to catch redirects
 					$this->core->redirect = $matches[1];
-					// halt processing anything after the redirect
+					// don't process anything after the redirect
 					$this->unprocessed_body = '';
 					return;
 				} else {
@@ -1303,51 +1322,53 @@ class ease_parser
 			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*(empty|clear|clean|flush|html\s*dump|show|print|echo)\s*bucket\s*([^;]+?)\s*;/is', $this->unprocessed_body, $matches)) {
 				// inject any global variables into the bucket name
 				$this->interpreter->inject_global_variables($matches[2]);
-				$bucket_name = strtolower($matches[2]) . '.';
-				$bucket_name_length = strlen($bucket_name);
-				switch(preg_replace('/[^a-z]+/s', '', strtolower($matches[1]))) {
-					case 'empty':
-					case 'clear':
-					case 'clean':
-					case 'flush':
-						// process every global variable looking for the referenced bucket
-						foreach($this->core->globals as $key=>$value) {
-							if(substr($key, 0, $bucket_name_length)==$bucket_name) {
-								// a global variable was found matching the referenced bucket... unset it
-								unset($this->core->globals[$key]);
-							}
-						}
-						break;
-					case 'htmldump':
-					case 'show':
-					case 'print':
-					case 'echo':
-						// process every global variable looking for the referenced bucket
-						$bucket_array = array();
-						foreach($this->core->globals as $key=>$value) {
-							if(substr($key, 0, $bucket_name_length)==$bucket_name) {
-								// a global variable was found matching the referenced bucket
-								$bucket_pointer = &$bucket_array;							
-								// process the key to build an associative array of the bucket
-								// indexes are denoted with a period .  (ex: my_bucket.name, my_bucket.address.city)
-								$key_parts = explode('.', $key);
-								unset($key_parts[0]);
-								foreach($key_parts as $key_part) {
-									if(!isset($bucket_pointer[$key_part])) {
-										$bucket_pointer[$key_part] = null;
-									}
-									$bucket_pointer = &$bucket_pointer[$key_part];
+				if(!in_array(strtolower($matches[2]), $this->core->reserved_buckets)) {
+					$bucket_name = strtolower($matches[2]) . '.';
+					$bucket_name_length = strlen($bucket_name);
+					switch(preg_replace('/[^a-z]+/s', '', strtolower($matches[1]))) {
+						case 'empty':
+						case 'clear':
+						case 'clean':
+						case 'flush':
+							// process every global variable looking for the referenced bucket
+							foreach($this->core->globals as $key=>$value) {
+								if(substr($key, 0, $bucket_name_length)==$bucket_name) {
+									// a global variable was found matching the referenced bucket... unset it
+									unset($this->core->globals[$key]);
 								}
-								$bucket_pointer = $value;
 							}
-						}
-						$bucket_dump = print_r($bucket_array, true);
-						$this->output_buffer .= '<pre style="tab-size:4;">';
-						$this->output_buffer .= "<b>" . htmlspecialchars($matches[2]) . ":</b> ";
-						$this->output_buffer .= htmlspecialchars($bucket_dump);
-						$this->output_buffer .= '</pre>';
-						break;
-					default:
+							break;
+						case 'htmldump':
+						case 'show':
+						case 'print':
+						case 'echo':
+							// process every global variable looking for the referenced bucket
+							$bucket_array = array();
+							foreach($this->core->globals as $key=>$value) {
+								if(substr($key, 0, $bucket_name_length)==$bucket_name) {
+									// a global variable was found matching the referenced bucket
+									$bucket_pointer = &$bucket_array;							
+									// process the key to build an associative array of the bucket
+									// indexes are denoted with a period .  (ex: my_bucket.name, my_bucket.address.city)
+									$key_parts = explode('.', $key);
+									unset($key_parts[0]);
+									foreach($key_parts as $key_part) {
+										if(!isset($bucket_pointer[$key_part])) {
+											$bucket_pointer[$key_part] = null;
+										}
+										$bucket_pointer = &$bucket_pointer[$key_part];
+									}
+									$bucket_pointer = $value;
+								}
+							}
+							$bucket_dump = print_r($bucket_array, true);
+							$this->output_buffer .= '<pre style="tab-size:4;">';
+							$this->output_buffer .= "<b>" . htmlspecialchars($matches[2]) . ":</b> ";
+							$this->output_buffer .= htmlspecialchars($bucket_dump);
+							$this->output_buffer .= '</pre>';
+							break;
+						default:
+					}
 				}
 				// remove the BUCKET command from the EASE block, then process any remains
 				$this->unprocessed_body = $this->core->ease_block_start . substr($this->unprocessed_body, strlen($matches[0]));
@@ -1380,27 +1401,26 @@ class ease_parser
 			}
 
 			###############################################
-			##	IF ELSE - Conditional EASE blocks
+			##	IF ELSE - Conditional EASE
 			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*if\s*\(\s*(.*?)\s*\)\s*\{(.*?)\}\s*((?:else\s*if\s*\(\s*.*?\s*\)\s*\{.*?\}\s*)*)(?:else\s*\{(.*?)\}\s*|)(' . preg_quote($this->core->ease_block_end, '/') . '|.*?;\s*' . preg_quote($this->core->ease_block_end, '/') . ')/is', $this->unprocessed_body, $matches)) {
-				// initialize variables to store the EASE blocks by condition, the else condition EASE block, and the EASE block for any matched condition
+				// initialize conditions and variables to store Conditional EASE blocks
 				$conditions = array();
 				$else_ease_block = '';
 				$matched_condition = false;
 				$process_ease_block = '';
-				// process the regular expression matches to build an array of conditions, and any else condition
+				// continue processing the matches to build an array Conditonal EASE blocks
 				$conditions[$matches[1]] = $matches[2];
 				// process any ELSE IF conditions
 				while(preg_match('/^else\s*if\s*\(\s*(.*?)\s*\)\s*\{(.*?)\}\s*/is', $matches[3], $inner_matches)) {
-					// found an ELSE IF condition
+					// found an ELSE IF Conditional EASE block
 					$conditions[$inner_matches[1]] = $inner_matches[2];
 					$matches[3] = substr($matches[3], strlen($inner_matches[0]));
 				}
-				// store the EASE block for any ELSE condition
 				if(trim($matches[4])!='') {
-					// found an ELSE condition
+					// found an ELSE Conditional EASE block
 					$else_ease_block = $matches[4];
 				}
-				// process each conditional in order to determine if any of the conditional EASE blocks should be processed
+				// FIFO process each condition... if a match is found, process the associated Conditional EASE block
 				foreach($conditions as $condition=>$conditional_ease_block) {
 					$remaining_condition = $condition;
 					$php_condition_string = '';
@@ -1435,9 +1455,11 @@ class ease_parser
 					}
 				}
 				if(!$matched_condition) {
+					// none of the IF conditions were matched, so process the ELSE Conditional EASE block
+					// the ELSE block defaults to blank
 					$process_ease_block = $else_ease_block;
 				}
-				// remove the IF block from the body, then inject the matched conditional EASE block into the start of remaining body
+				// remove the IF{} block from the body, then inject the matched Conditional EASE block into the start of remaining body
 				if(!preg_match('/^\s*' . preg_quote($this->core->ease_block_start, '/') . '\s*[^' . preg_quote($this->core->global_reference_start, '/') . ']+/is', $process_ease_block, $inner_matches)) {
 					// the conditional block did not start with a ease block start sequence... add one
 					$process_ease_block = $this->core->ease_block_start . $process_ease_block;
@@ -1448,20 +1470,107 @@ class ease_parser
 					// the conditional block did not end with a ease block end sequence... add one
 					$process_ease_block = $process_ease_block . $this->core->ease_block_end;
 				}
-				// replace the conditional in the unprocessed body with the matching conditional block
+				// replace the conditional in the unprocessed body with the EASE block for the matched condition
 				if($matches[5]!=$this->core->ease_block_end) {
-					// there is EASE code after the conditional block
+					// there is EASE code after the IF{} block... add it after the Conditional EASE block
 					$this->unprocessed_body = $process_ease_block . $this->core->ease_block_start . $matches[5] . substr($this->unprocessed_body, strlen($matches[0]));
 				} else {
 					$this->unprocessed_body = $process_ease_block . substr($this->unprocessed_body, strlen($matches[0]));
 				}
-	 			// the remaining body will now start with the matching conditional block
+	 			// the remaining unprocessed body will now begin with the EASE block for the matched condition
 				continue;
 			}
 
 			###############################################
-			##	APPLY *GOOGLE-DRIVE-SPREADSHEET-ROW* AS "QUOTED-STRING"
-			// TODO!!
+			##	APPLY *GOOGLE-SHEET-ROW* AS "QUOTED-STRING"
+			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*apply\s+(google\s*drive|g\s*drive|google|g|)\s*(spread|)sheet(\s*"\s*(.+?)\s*"\s*|\s+([\w-]+))(\s*"\s*(.+?)\s*"\s*|)(\s*\.|)\s*([^;]*?)\s*(and\s*reference\s*|reference\s*|)(as\s*"\s*(.*?)\s*"|)\s*;\s*/is', $this->unprocessed_body, $matches)) {
+				// initialize a Google Sheet API client
+				$this->core->validate_google_access_token();
+				require_once 'ease/lib/Spreadsheet/Autoloader.php';
+				$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
+				$serviceRequest = new Google\Spreadsheet\DefaultServiceRequest($request);
+				Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
+				$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
+				// determine the Google Sheet "Name" or ID, and the EASE Row ID
+				$google_spreadsheet_id = '';
+				$google_spreadsheet_name = '';
+				if(isset($matches[4]) && trim($matches[4])!='') {
+					// the Google Sheet was referenced by "Name"
+					$google_spreadsheet_name = $matches[4];
+					$this->interpreter->inject_global_variables($google_spreadsheet_name);
+					$spreadsheetFeed = $spreadsheetService->getSpreadsheets();
+					$spreadSheet = $spreadsheetFeed->getByTitle($google_spreadsheet_name);
+					if($spreadSheet===null) {
+						// the supplied Google Sheet name did not match an existing Google Sheet
+						echo 'Error!  Unable to load Google Sheet named: ' . htmlspecialchars($google_spreadsheet_name);
+						exit;
+					}
+				} else {
+					// the Google Sheet was referenced by ID
+					$google_spreadsheet_id = $matches[5];
+					$this->interpreter->inject_global_variables($google_spreadsheet_id);
+					$spreadSheet = $spreadsheetService->getSpreadsheetById($google_spreadsheet_id);
+					if($spreadSheet===null) {
+						// there was an error loading the Google Sheet by ID...
+						// flush the cached meta data for the Google Sheet ID which may no longer be valid
+						$this->core->flush_meta_data_for_google_spreadsheet_by_id($google_spreadsheet_id);
+						echo 'Error!  Unable to load Google Sheet: ' . htmlspecialchars($google_spreadsheet_id);
+						exit;
+					}
+				}
+				// load the worksheets in the Google Sheet
+				$worksheetFeed = $spreadSheet->getWorksheets();
+				$google_spreadsheet_save_to_sheet = '';
+				if(trim($matches[6])!='') {
+					$google_spreadsheet_save_to_sheet = $matches[6];
+					$this->interpreter->inject_global_variables($google_spreadsheet_save_to_sheet);
+					$worksheet = $worksheetFeed->getByTitle($google_spreadsheet_save_to_sheet);
+					if($worksheet===null) {
+						// the supplied worksheet name did not match an existing worksheet of the Google Sheet
+						echo 'Error!  Unable to load Worksheet named: ' . htmlspecialchars($google_spreadsheet_save_to_sheet);
+						exit;
+					}
+				} else {
+					$worksheet = $worksheetFeed->getFirstSheet();
+				}
+				// check for unloaded worksheet
+				if($worksheet===null) {
+					echo "Google Sheet Error!  Unable to load worksheet.";
+					exit;
+				}
+				// load meta data for the Google Sheet to map header names to columns
+				if($google_spreadsheet_id!='') {
+					// Google Sheet referenced by ID
+					$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($google_spreadsheet_id, $google_spreadsheet_save_to_sheet);
+				} elseif($google_spreadsheet_name!='') {
+					// Google Sheet referenced by "Name"
+					$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($google_spreadsheet_name, $google_spreadsheet_save_to_sheet);
+				}
+				$this->interpreter->inject_global_variables($matches[9]);
+				$row_id	 = preg_replace('/[^a-z0-9]+/s', '', strtolower(ltrim($matches[9])));
+				// determine if a referenced name was provided
+				$this->interpreter->inject_global_variables($matches[12]);
+				$apply_reference = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($matches[12])), '_');
+				// query for the row to delete
+				$listFeed = $worksheet->getListFeed('', '', "easerowid = \"$row_id\"");
+				$listEntries = $listFeed->getEntries();
+				// delete all rows that matched the requested EASE Row ID value
+				foreach($listEntries as $listEntry) {
+					$existing_row = $listEntry->getValues();
+					// convert the listEntry column header keys to column letter keys
+					foreach($existing_row as $key=>$value) {
+						$this->core->globals["$apply_reference.$key"] = $value;
+						if(isset($spreadsheet_meta_data['column_letter_by_name'][$key])) {
+							$this->core->globals["$apply_reference.{$spreadsheet_meta_data['column_letter_by_name'][$key]}"] = $value;
+						}
+					}
+					$this->core->globals["$apply_reference.id"] = &$this->core->globals["$apply_reference.easerowid"];
+					$this->core->globals["$apply_reference.uuid"] = &$this->core->globals["$apply_reference.easerowid"];
+				}
+				// remove the APPLY tag from the unprocessed body
+				$this->unprocessed_body = $this->core->ease_block_start . substr($this->unprocessed_body, strlen($matches[0]));
+				continue;
+			}		
 
 			###############################################
 			##	APPLY *SQL-INSTANCE* AS "QUOTED-STRING"
@@ -1634,7 +1743,7 @@ class ease_parser
 
 							// build the email message and headers according to the type
 							$mail_options = array();
-							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='') {
+							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='' && !$this->core->include_disabled) {
 								// parse the bodypage using any supplied HTTP ?query string
 								$send_email_espx_body_url_parts = explode('?', ltrim($send_email_attributes['bodypage'], '/'), 2);
 								if(count($send_email_espx_body_url_parts)==2) {
@@ -1831,7 +1940,7 @@ class ease_parser
 								$header_row_csv .= $prefix . '""';
 								$header_row_count++;
 							}
-							// add column for unique row ID used by the EASE core to enable row update and delete
+							// add column for unique EASE Row ID used by the EASE core to enable row update and delete
 							$header_row_csv .= $prefix . '"EASE Row ID"';
 							$header_row_csv .= "\r\n";
 
@@ -1910,7 +2019,7 @@ class ease_parser
 								$header_row[] = '';
 								$header_row_count++;
 							}
-							// add column for unique row ID used by the EASE core to enable row update and delete
+							// add column for unique EASE Row ID used by the EASE core to enable row update and delete
 							$header_row[] = 'EASE Row ID';
 							$new_worksheet_rows = 100;
 							if(count($header_row)<=20) {
@@ -2108,7 +2217,7 @@ class ease_parser
 							);
 							// build the email message and headers according to the type
 							$mail_options = array();
-							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='') {
+							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='' && !$this->core->include_disabled) {
 								// parse the bodypage using any supplied HTTP ?query string
 								$send_email_espx_body_url_parts = explode('?', ltrim($send_email_attributes['bodypage'], '/'), 2);
 								if(count($send_email_espx_body_url_parts)==2) {
@@ -2119,7 +2228,7 @@ class ease_parser
 									$send_email_espx_filepath = $this->core->application_root . DIRECTORY_SEPARATOR . preg_replace('/\.espx$/i', '', $send_email_attributes['bodypage']) . '.espx';
 									$send_email_url_params = null;
 								}
-								$send_email_espx_body = file_get_contents($send_email_espx_filepath);
+								$send_email_espx_body = @file_get_contents($send_email_espx_filepath);
 								$send_email_page_parser = new ease_parser($this->core, $send_email_url_params);
 								$send_email_attributes['body'] = $send_email_page_parser->process($send_email_espx_body, true);
 								$send_email_page_parser = null;
@@ -2285,7 +2394,7 @@ class ease_parser
 					if($this->core->catch_redirect) {
 						// EASE Framework configured to catch redirects
 						$this->core->redirect = $create_new_record_redirect_to;
-						// halt processing anything after the redirect
+						// don't process anything after the redirect
 						$this->unprocessed_body = '';
 						return;
 					} else {
@@ -2309,14 +2418,14 @@ class ease_parser
 				###############################################
 				##	UPDATE RECORD - FOR GOOGLE SHEET ROW
 				if(preg_match('/^for\s*(google\s*drive|g\s*drive|google|g|)\s*(spread|)sheet(\s*"\s*(.+?)\s*"\s*|\s+([\w-]+))(\s*"\s*(.+?)\s*"\s*|)(\s*\.|)\s*([^;]*?)\s*(and\s*reference\s*|reference\s*|)(as\s*"\s*(.*?)\s*"|)\s*;\s*/is', $unprocessed_update_record_block, $matches)) {
-					// initialize a google Google Sheet API client
+					// initialize a Google Sheet API client
 					$this->core->validate_google_access_token();
 					require_once 'ease/lib/Spreadsheet/Autoloader.php';
 					$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
 					$serviceRequest = new Google\Spreadsheet\DefaultServiceRequest($request);
 					Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
 					$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
-					// determine the Google Sheet "Name" or ID, and the row ID
+					// determine the Google Sheet "Name" or ID, and the EASE Row ID
 					$google_spreadsheet_id = '';
 					$google_spreadsheet_name = '';
 					if(trim($matches[4])!='') {
@@ -2431,7 +2540,7 @@ class ease_parser
 							}
 							// build the email message and headers according to the type
 							$mail_options = array();
-							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='') {
+							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='' && !$this->core->include_disabled) {
 								// parse the bodypage using any supplied HTTP ?query string
 								$send_email_espx_body_url_parts = explode('?', ltrim($send_email_attributes['bodypage'], '/'), 2);
 								if(count($send_email_espx_body_url_parts)==2) {
@@ -2442,7 +2551,7 @@ class ease_parser
 									$send_email_espx_filepath = $this->core->application_root . DIRECTORY_SEPARATOR . preg_replace('/\.espx$/i', '', $send_email_attributes['bodypage']) . '.espx';
 									$send_email_url_params = null;
 								}
-								$send_email_espx_body = file_get_contents($send_email_espx_filepath);
+								$send_email_espx_body = @file_get_contents($send_email_espx_filepath);
 								$send_email_page_parser = new ease_parser($this->core, $send_email_url_params);
 								$send_email_attributes['body'] = $send_email_page_parser->process($send_email_espx_body, true);
 								$send_email_page_parser = null;
@@ -2551,49 +2660,36 @@ class ease_parser
 						$this->unprocessed_body = substr($this->unprocessed_body, strlen($error));
 						return;
 					}
-				
 					// update any set values for the Google Sheet row
 					if(isset($updated_row)) {
-						$alphas = array();
-						for($i='A'; $i<'ZZ'; $i++) {
-							$alphas[] = $i;
-						}
-						$cellFeed = $worksheet->getCellFeed();
-						$cellEntries = $cellFeed->getEntries();
-						// build array of row number by EASE Row ID
-						$row_number_by_ease_row_id = array();
-						foreach($cellEntries as $cellEntry) {
-							$cell_title = $cellEntry->getTitle();
-							if(preg_match('/([A-Z]+)([0-9]+)/is', $cell_title, $matches)) {
-								if($matches[1]==$spreadsheet_meta_data['column_letter_by_name']['easerowid']) {
-									$row_number_by_ease_row_id[$cellEntry->getContent()] = $matches[2];
-								}
+						// new values found... update the Google Sheet Row
+						foreach($updated_row as $key=>$value) {
+							$key = preg_replace('/(^[0-9]+|[^a-z0-9]+)/s', '', strtolower($key));
+							if(isset($spreadsheet_meta_data['column_name_by_letter'][strtoupper($key)])) {
+								// the column was referenced by column letter... change it to reference the column header name
+								unset($updated_row[$key]);
+								$updated_row[$spreadsheet_meta_data['column_name_by_letter'][strtoupper($key)]] = $value;
+							} elseif(isset($spreadsheet_meta_data['column_letter_by_name'][$key])) {
+								// the column was referenced by an existing column header name
+							} else {
+								// the referenced column wasn't found in the cached Google Sheet meta data...
+								//	dump the cache and reload it, then check again... if it still isn't found, create it
+								// TODO!! consolidate all the code that does this into a core function
 							}
 						}
-						if(isset($row_number_by_ease_row_id[$row_id]) && $row_number_by_ease_row_id[$row_id] > 0) {
-							// update each cell in the row
-							foreach($updated_row as $key=>$value) {
-								if(isset($spreadsheet_meta_data['column_name_by_letter'][strtoupper($key)])) {
-									// the column was referenced by column letter
-									$column_number = array_search(strtoupper($key), $alphas) + 1;
-									$cellEntry->setContent($value);
-									$cellEntry->setCell($row_number_by_ease_row_id[$row_id], $column_number);
-									$cellEntry->update();
-								} elseif(isset($spreadsheet_meta_data['column_letter_by_name'][$key])) {
-									// the column was referenced by an existing column header name
-									$column_number = array_search($spreadsheet_meta_data['column_letter_by_name'][$key], $alphas) + 1;
-									$cellEntry->setContent($value);
-									$cellEntry->setCell($row_number_by_ease_row_id[$row_id], $column_number);
-									$cellEntry->update();
-								} else {
-									// the referenced column wasn't found in the cached Google Sheet meta data...
-									//	dump the cache and reload it, then check again... if it still isn't found, create it
-									// TODO!! consolidate all the code that does this into a core function
+						// query for the row to update
+						$listFeed = $worksheet->getListFeed('', '', "easerowid = \"$row_id\"");
+						$listEntries = $listFeed->getEntries();
+						// update all rows that matched the requested EASE Row ID value
+						// TODO!! if a matching record wasn't found, treat this as a create record command instead
+						foreach($listEntries as $listEntry) {
+							$current_row = $listEntry->getValues();
+							foreach($current_row as $key=>$value) {
+								if(!isset($updated_row[$key])) {
+									$updated_row[$key] = $value;
 								}
 							}
-						} else {
-							// matching row not found...
-							// TODO!! treat this as a create record command
+							$listEntry->update($updated_row);
 						}
 					}
 					// if a redirect command was set in the UPDATE RECORD block, redirect now and stop processing this request
@@ -2602,7 +2698,7 @@ class ease_parser
 						if($this->core->catch_redirect) {
 							// EASE Framework configured to catch redirects
 							$this->core->redirect = $update_record_redirect_to;
-							// halt processing anything after the redirect
+							// don't process anything after the redirect
 							$this->unprocessed_body = '';
 							return;
 						} else {
@@ -2743,17 +2839,17 @@ class ease_parser
 			###############################################
 			##	DELETE RECORD FOR GOOGLE SHEET
 			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*delete\s+record\s+(for|from)\s*(google\s*drive|g\s*drive|google|g|)\s*(spread|)sheet(\s*"\s*(.+?)\s*"\s*|\s+([\w-]+))(\s*"\s*(.+?)\s*"\s*|)(\s*\.|)\s*([^;]*?)\s*(and\s*reference\s*|reference\s*|)(as\s*"\s*(.*?)\s*"|)\s*;\s*/is', $this->unprocessed_body, $matches)) {
-				// initialize a google Google Sheet API client
+				// initialize a Google Sheet API client
 				$this->core->validate_google_access_token();
 				require_once 'ease/lib/Spreadsheet/Autoloader.php';
 				$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
 				$serviceRequest = new Google\Spreadsheet\DefaultServiceRequest($request);
 				Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
 				$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
-				// determine the Google Sheet "Name" or ID, and the row ID
+				// determine the Google Sheet "Name" or ID, and the EASE Row ID
 				$google_spreadsheet_id = '';
 				$google_spreadsheet_name = '';
-				if(trim($matches[5])!='') {
+				if(isset($matches[5]) && trim($matches[5])!='') {
 					// the Google Sheet was referenced by "Name"
 					$google_spreadsheet_name = $matches[5];
 					$this->interpreter->inject_global_variables($google_spreadsheet_name);
@@ -2797,41 +2893,25 @@ class ease_parser
 					echo "Google Sheet Error!  Unable to load worksheet.";
 					exit;
 				}
+				// load meta data for the Google Sheet to map header names to columns
 				if($google_spreadsheet_id!='') {
-					// load the Google Sheet by the referenced ID
+					// Google Sheet referenced by ID
 					$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($google_spreadsheet_id, $google_spreadsheet_save_to_sheet);
 				} elseif($google_spreadsheet_name!='') {
-					// load the Google Sheet by the referenced name
+					// Google Sheet referenced by "Name"
 					$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($google_spreadsheet_name, $google_spreadsheet_save_to_sheet);
 				}
 				$this->interpreter->inject_global_variables($matches[10]);
 				$row_id	 = preg_replace('/[^a-z0-9]+/s', '', strtolower(ltrim($matches[10])));
 				// determine if a referenced name was provided
 				$this->interpreter->inject_global_variables($matches[13]);
-				$delete_record_reference = preg_replace('/[^a-z0-9]+/s', '_', strtolower($matches[13]));
-				// create lookup table for Column Number to Column Letter
-				$alphas = array();
-				for($i='A'; $i<'ZZ'; $i++) {
-					$alphas[] = $i;
-				}
-				$cellFeed = $worksheet->getCellFeed();
-				$cellEntries = $cellFeed->getEntries();
-				// build array of row number by EASE Row ID
-				$row_number_by_ease_row_id = array();
-				foreach($cellEntries as $cellEntry) {
-					$cell_title = $cellEntry->getTitle();
-					if(preg_match('/([A-Z]+)([0-9]+)/is', $cell_title, $cell_matches)) {
-						if($cell_matches[1]==$spreadsheet_meta_data['column_letter_by_name']['easerowid']) {
-							$row_number_by_ease_row_id[$cellEntry->getContent()] = $cell_matches[2];
-						}
-					}
-				}
-				// update each cell in the referenced row
-				foreach($spreadsheet_meta_data['column_letter_by_name'] as $key) {
-					$column_number = array_search(strtoupper($key), $alphas) + 1;
-					$cellEntry->setContent('');
-					$cellEntry->setCell($row_number_by_ease_row_id[$row_id], $column_number);
-					$cellEntry->update();
+				$delete_record_reference = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($matches[13])), '_');
+				// query for the row to delete
+				$listFeed = $worksheet->getListFeed('', '', "easerowid = \"$row_id\"");
+				$listEntries = $listFeed->getEntries();
+				// delete all rows that matched the requested EASE Row ID value
+				foreach($listEntries as $listEntry) {
+					$listEntry->delete();
 				}
 				// remove the DELETE RECORD block from the unprocessed body
 				$this->unprocessed_body = $this->core->ease_block_start . substr($this->unprocessed_body, strlen($matches[0]));
@@ -2908,7 +2988,7 @@ class ease_parser
 				}
 				// build the email message and headers according to the type
 				$mail_options = array();
-				if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='') {
+				if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='' && !$this->core->include_disabled) {
 					// parse the bodypage using any supplied HTTP ?query string
 					$send_email_espx_body_url_parts = explode('?', ltrim($send_email_attributes['bodypage'], '/'), 2);
 					if(count($send_email_espx_body_url_parts)==2) {
@@ -2919,7 +2999,7 @@ class ease_parser
 						$send_email_espx_filepath = $this->core->application_root . DIRECTORY_SEPARATOR . preg_replace('/\.espx$/i', '', $send_email_attributes['bodypage']) . '.espx';
 						$send_email_url_params = null;
 					}
-					$send_email_espx_body = file_get_contents($send_email_espx_filepath);
+					$send_email_espx_body = @file_get_contents($send_email_espx_filepath);
 					$send_email_page_parser = new ease_parser($this->core, $send_email_url_params);
 					$send_email_attributes['body'] = $send_email_page_parser->process($send_email_espx_body, true);
 					$send_email_page_parser = null;
@@ -2978,26 +3058,24 @@ class ease_parser
 							$google_spreadsheet_id = $inner_matches[6];
 						}
 					}
-					// check for a named worksheet in the FOR attribute
+					// check for a referenced worksheet "Name"
 					if(trim($inner_matches[9])!='') {
-						// a worksheet name was provided for the Google Sheet
+						// a worksheet name was provided
 						$this->interpreter->inject_global_variables($inner_matches[9]);
 						$save_to_sheet = $inner_matches[9];
 					}
-					// check for a Row ID in the FOR attribute, implying an edit form
+					// check for a referenced EASE Row ID
 					$row_uuid = null;
 					if(trim($inner_matches[11])!='') {
-						// a Row ID value was provided, this is an edit form
+						// an EASE Row ID value was provided
 						$this->interpreter->inject_global_variables($inner_matches[11]);
-						$row_uuid = $inner_matches[11];
+						$row_uuid = trim($inner_matches[11]);
 						if($row_uuid=='0' || $row_uuid=='') {
 							$row_uuid = null;
 						}
 					}
-
 					// the FOR attribute of the FORM was successfully parsed, scan for any remaining FORM directives
 					$unprocessed_start_form_block = substr($unprocessed_start_form_block, strlen($inner_matches[0]));
-
 					// IF/ELSE - parse out and process any Conditionals from the start form block
 					$unprocessed_start_form_block = preg_replace_callback(
 						'/\s*if\s*\(\s*(.*?)\s*\)\s*\{(.*?)\}\s*(else\s*if\s*\(\s*(.*?)\s*\)\s*\{(.*?)\}\s*)*(else\s*\{(.*?)\}\s*|)/is',
@@ -3059,7 +3137,6 @@ class ease_parser
 						},
 						$unprocessed_start_form_block
 					);
-
 					// SAVE TO - define the worksheet in the Google Sheet to use
 					unset($save_to_sheet);
 					$unprocessed_start_form_block = preg_replace_callback(
@@ -3071,7 +3148,6 @@ class ease_parser
 						},
 						$unprocessed_start_form_block
 					);
-				
 					// RESTRICT POSTS - define a variable and its required contents to allow the post (CAPTCHA)
 					$restrict_post = array();
 					$unprocessed_start_form_block = preg_replace_callback(
@@ -3083,7 +3159,6 @@ class ease_parser
 						},
 						$unprocessed_start_form_block
 					);
-				
 					// WHEN *ACTION* REDIRECT TO "QUOTED-STRING"
 					$redirect_to_by_action = array();
 					$unprocessed_start_form_block = preg_replace_callback(
@@ -3140,7 +3215,7 @@ class ease_parser
 							);
 							// build the email message and headers according to the type
 							$mail_options = array();
-							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='') {
+							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='' && !$this->core->include_disabled) {
 								// parse the bodypage using any supplied HTTP ?query string
 								$send_email_espx_body_url_parts = explode('?', ltrim($send_email_attributes['bodypage'], '/'), 2);
 								if(count($send_email_espx_body_url_parts)==2) {
@@ -3151,7 +3226,7 @@ class ease_parser
 									$send_email_espx_filepath = $this->core->application_root . DIRECTORY_SEPARATOR . preg_replace('/\.espx$/i', '', $send_email_attributes['bodypage']) . '.espx';
 									$send_email_url_params = null;
 								}
-								$send_email_espx_body = file_get_contents($send_email_espx_filepath);
+								$send_email_espx_body = @file_get_contents($send_email_espx_filepath);
 								$send_email_page_parser = new ease_parser($this->core, $send_email_url_params);
 								$send_email_attributes['body'] = $send_email_page_parser->process($send_email_espx_body, true);
 								$send_email_page_parser = null;
@@ -3181,7 +3256,6 @@ class ease_parser
 						},
 						$unprocessed_start_form_block
 					);
-
 					// parse out FORM Directives from the top of the START Block
 					// TODO!! rewrite all the other FORM-Directive parsing (directly above), and move into this do-while structure
 					$set_to_list_by_action = array();
@@ -3386,7 +3460,6 @@ class ease_parser
 							$unprocessed_start_form_block = $unprocessed_delete_sql_record_block;
 							continue;
 						}
-
 						// SET FORM ATTRIBUTE - add attributes for the HTML <form> tag that will be generated
 						if(preg_match('/^\s*set\s+form\s*\.\s*([^;]+?)\s*to\s*"(.*?)"\s*;(.*)$/is', $unprocessed_start_form_block, $form_directive_matches)) {
 							$form_directive_found = true;
@@ -3400,7 +3473,6 @@ class ease_parser
 						// !! ANY NEW FORM DIRECTIVES FOR GOOGLE SHEET GET ADDED HERE
 
 					} while($form_directive_found);
-
 					// if the START Block has any non-comment content remaining, there was an unrecognized FORM - FOR GOOGLE SHEET Directive
 					$this->interpreter->remove_comments($unprocessed_start_form_block);
 					$this->interpreter->inject_global_variables($unprocessed_start_form_block);
@@ -3415,53 +3487,51 @@ class ease_parser
 						$this->unprocessed_body = substr($this->unprocessed_body, strlen($error));
 						return;
 					}
-					// initialize form information from the user session
-					if(isset($_REQUEST['ease_form_id']) && isset($_SESSION['ease_forms'][$_REQUEST['ease_form_id']])) {
-						$form_id = $_REQUEST['ease_form_id'];
-					} else {
-						$form_id = $this->core->new_uuid();
-						$_SESSION['ease_forms'][$form_id]['created_on'] = time();
-						@$_SESSION['ease_forms'][$form_id]['google_spreadsheet_id'] = $google_spreadsheet_id;
-						@$_SESSION['ease_forms'][$form_id]['google_spreadsheet_name'] = $google_spreadsheet_name;
-						@$_SESSION['ease_forms'][$form_id]['save_to_sheet'] = $save_to_sheet;
-						@$_SESSION['ease_forms'][$form_id]['row_uuid'] = $row_uuid;
-						@$_SESSION['ease_forms'][$form_id]['restrict_post'] = $restrict_post;
-						@$_SESSION['ease_forms'][$form_id]['set_to_list_by_action'] = $set_to_list_by_action;
-						@$_SESSION['ease_forms'][$form_id]['calculate_list_by_action'] = $calculate_list_by_action;
-						@$_SESSION['ease_forms'][$form_id]['send_email_list_by_action'] = $send_email_list_by_action;
-						@$_SESSION['ease_forms'][$form_id]['redirect_to_by_action'] = $redirect_to_by_action;
-						@$_SESSION['ease_forms'][$form_id]['create_sql_record_list_by_action'] = $create_sql_record_list_by_action;
-						@$_SESSION['ease_forms'][$form_id]['update_sql_record_list_by_action'] = $update_sql_record_list_by_action;
-						@$_SESSION['ease_forms'][$form_id]['delete_sql_record_list_by_action'] = $delete_sql_record_list_by_action;
-						@$_SESSION['ease_forms'][$form_id]['create_spreadsheet_row_list_by_action'] = $create_spreadsheet_row_list_by_action;
-						@$_SESSION['ease_forms'][$form_id]['update_spreadsheet_row_list_by_action'] = $update_spreadsheet_row_list_by_action;
-						@$_SESSION['ease_forms'][$form_id]['delete_spreadsheet_row_list_by_action'] = $delete_spreadsheet_row_list_by_action;
-						@$_SESSION['ease_forms'][$form_id]['conditional_actions'] = $conditional_actions;
-					}
 					// remove the START Block from the unprocessed body
 					$this->unprocessed_body = substr($this->unprocessed_body, strlen($start_form_block));
 					// find the END FORM and parse out the form body
 					if(preg_match('/(.*?)' . preg_quote($this->core->ease_block_start, '/') . '\s*end\s*form\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
-						// END FORM found, process the parsed form body
+						// END FORM tag found, process the EASE form to generate an HTML form
 						$form_body = $matches[1];
+						// initialize form information from the user session
+						if(isset($_REQUEST['ease_form_id']) && isset($_SESSION['ease_forms'][$_REQUEST['ease_form_id']])) {
+							$form_id = $_REQUEST['ease_form_id'];
+						} else {
+							$form_id = $this->core->new_uuid();
+							$_SESSION['ease_forms'][$form_id]['created_on'] = time();
+							@$_SESSION['ease_forms'][$form_id]['google_spreadsheet_id'] = $google_spreadsheet_id;
+							@$_SESSION['ease_forms'][$form_id]['google_spreadsheet_name'] = $google_spreadsheet_name;
+							@$_SESSION['ease_forms'][$form_id]['save_to_sheet'] = $save_to_sheet;
+							@$_SESSION['ease_forms'][$form_id]['restrict_post'] = $restrict_post;
+							@$_SESSION['ease_forms'][$form_id]['set_to_list_by_action'] = $set_to_list_by_action;
+							@$_SESSION['ease_forms'][$form_id]['calculate_list_by_action'] = $calculate_list_by_action;
+							@$_SESSION['ease_forms'][$form_id]['send_email_list_by_action'] = $send_email_list_by_action;
+							@$_SESSION['ease_forms'][$form_id]['redirect_to_by_action'] = $redirect_to_by_action;
+							@$_SESSION['ease_forms'][$form_id]['create_sql_record_list_by_action'] = $create_sql_record_list_by_action;
+							@$_SESSION['ease_forms'][$form_id]['update_sql_record_list_by_action'] = $update_sql_record_list_by_action;
+							@$_SESSION['ease_forms'][$form_id]['delete_sql_record_list_by_action'] = $delete_sql_record_list_by_action;
+							@$_SESSION['ease_forms'][$form_id]['create_spreadsheet_row_list_by_action'] = $create_spreadsheet_row_list_by_action;
+							@$_SESSION['ease_forms'][$form_id]['update_spreadsheet_row_list_by_action'] = $update_spreadsheet_row_list_by_action;
+							@$_SESSION['ease_forms'][$form_id]['delete_spreadsheet_row_list_by_action'] = $delete_spreadsheet_row_list_by_action;
+							@$_SESSION['ease_forms'][$form_id]['conditional_actions'] = $conditional_actions;
+						}
 						// if this is an edit form, pull the current values for the existing row being edited
 						$existing_row = array();
 						if(isset($row_uuid)) {
-							// initialize a google Google Sheet API client
+							// initialize a Google Sheet API client
 							require_once 'ease/lib/Spreadsheet/Autoloader.php';
 							$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
 							$serviceRequest = new Google\Spreadsheet\DefaultServiceRequest($request);
 							Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
 							$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
-							// determine the Google Sheet "Name" or ID, and the row ID
+							// determine the Google Sheet "Name" or ID, and the EASE Row ID
 							if(trim($google_spreadsheet_name)!='') {
 								// the Google Sheet was referenced by "Name"
 								$spreadsheetFeed = $spreadsheetService->getSpreadsheets();
 								$spreadSheet = $spreadsheetFeed->getByTitle($google_spreadsheet_name);
 								if($spreadSheet===null) {
 									// the supplied Google Sheet name did not match an existing Google Sheet
-									// TODO!! create a new Google Sheet using the supplied name... colsolidate the code
-									// for now, error out
+									// TODO!! create a new Google Sheet using the supplied name... colsolidate the code... for now, error out
 									echo 'Error!  Unable to load Google Sheet named: ' . htmlspecialchars($google_spreadsheet_name);
 									exit;
 								}
@@ -3472,11 +3542,11 @@ class ease_parser
 									// there was an error loading the Google Sheet by ID...
 									// flush the cached meta data for the Google Sheet ID which may no longer be valid
 									$this->core->flush_meta_data_for_google_spreadsheet_by_id($google_spreadsheet_id);
-									echo 'Error!  Unable to load Google Sheet with ID: ' . htmlspecialchars($google_spreadsheet_id);
+									echo 'Error!  Unable to load Google Sheet: ' . htmlspecialchars($google_spreadsheet_id);
 									exit;
 								}
 							} else {
-								echo 'Error!  EASE Form for Google Sheet without a referenced ID or name.';
+								echo 'Form for Google Sheet Error!  Missing Sheet ID or Name';
 								exit;
 							}
 							// load the worksheets in the Google Sheet
@@ -3487,7 +3557,7 @@ class ease_parser
 									// the supplied worksheet name did not match an existing worksheet of the Google Sheet;  create a new worksheet using the supplied name
 									// TODO! create the new worksheet.  colsolodate the code that adds new sheets
 									// for now, error
-									echo "Google Sheet Error!  Unable to load Worksheet named: " . htmlspecialchars($save_to_sheet);
+									echo 'Form for Google Sheet Error!  Unable to load Worksheet named: ' . htmlspecialchars($save_to_sheet);
 									exit;
 								}
 							} else {
@@ -3495,10 +3565,10 @@ class ease_parser
 							}
 							// check for unloaded worksheet
 							if($worksheet===null) {
-								echo "Google Sheet Error!  Unable to load Worksheet.";
+								echo 'Google Sheet Error!  Unable to load Worksheet';
 								exit;
 							}
-							// load meta data for the spreadsheet
+							// load meta data for the Google Sheet
 							if(trim($google_spreadsheet_id)!='') {
 								// load the Google Sheet by the referenced ID
 								$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($google_spreadsheet_id, $save_to_sheet);
@@ -3506,37 +3576,26 @@ class ease_parser
 								// load the Google Sheet by the referenced name
 								$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($google_spreadsheet_name, $save_to_sheet);
 							}
-							// scan the entire sheet looking for the requested ID in the EASE Row ID column for each row
-							$cellFeed = $worksheet->getCellFeed();
-							$cellEntries = $cellFeed->getEntries();
-							$current_row_number = null;
-							$found_matching_row_uuid = false;
-							foreach($cellEntries as $cellEntry) {
-								$cell_title = $cellEntry->getTitle();
-								if(preg_match('/([A-Z]+)([0-9]+)/is', $cell_title, $inner_matches)) {
-									// check if this cell is the start of a new row
-									if($inner_matches[2]!=$current_row_number) {
-										// this is a new row... if the last row was the matching row, we're now done
-										if($found_matching_row_uuid) {
-											break;
+							// query for the row to update
+							$listFeed = $worksheet->getListFeed('', '', "easerowid = \"$row_uuid\"");
+							$listEntries = $listFeed->getEntries();
+							if(is_array($listEntries) && count($listEntries)>0) {
+								// the referenced EASE Row ID matched an existing row
+								@$_SESSION['ease_forms'][$form_id]['row_uuid'] = $row_uuid;
+								foreach($listEntries as $listEntry) {
+									$existing_row = $listEntry->getValues();
+									// convert the listEntry column header keys to column letter keys
+									foreach($existing_row as $key=>$value) {
+										if(isset($spreadsheet_meta_data['column_letter_by_name'][$key])) {
+											unset($existing_row[$key]);
+											$existing_row[$spreadsheet_meta_data['column_letter_by_name'][$key]] = $value;
 										}
-										// the last row was not the matching row, so process this row to see if it matches the requested row ID
-										$current_row = array();
-										$current_row_number = $inner_matches[2];
-									}
-									$current_row[$inner_matches[1]] = $cellEntry->getContent();
-									if($inner_matches[1]==$spreadsheet_meta_data['column_letter_by_name']['easerowid'] && $current_row[$inner_matches[1]]==$row_uuid) {
-										// the current row being processes matches the requested row ID...
-										// continue processing the row for any values saved in columns after the EASE Row ID
-										$found_matching_row_uuid = true;
 									}
 								}
-							}
-							if($found_matching_row_uuid) {
-								$existing_row = $current_row;
-								@$_SESSION['ease_forms'][$form_id]['row_number'] = $current_row_number;
 							} else {
-								// the requested row ID was not matched in the spreadsheet... treat this as a create form
+								// the referenced EASE Row ID did not match an existing row
+								// treat this as a "creating" action and use the referenced ID when creating the record
+								@$_SESSION['ease_forms'][$form_id]['new_row_uuid'] = $row_uuid;
 								$row_uuid = null;
 							}
 						}
@@ -3683,7 +3742,7 @@ class ease_parser
 											} else {
 												unset($input_attributes_by_key['checked']);
 											}
-										} elseif($_SESSION['ease_forms'][$form_id]['row_uuid']) {
+										} elseif(isset($_SESSION['ease_forms'][$form_id]['row_uuid'])) {
 											if($spreadsheet_meta_data['column_letter_by_name'][$header_reference]) {
 												$column_letter = $spreadsheet_meta_data['column_letter_by_name'][$header_reference];
 											} else {
@@ -3746,7 +3805,7 @@ class ease_parser
 											} else {
 												unset($input_attributes_by_key['checked']);
 											}
-										} elseif($_SESSION['ease_forms'][$form_id]['row_uuid']) {
+										} elseif(isset($_SESSION['ease_forms'][$form_id]['row_uuid'])) {
 											if($spreadsheet_meta_data['column_letter_by_name'][$header_reference]) {
 												$column_letter = $spreadsheet_meta_data['column_letter_by_name'][$header_reference];
 											} else {
@@ -3779,7 +3838,7 @@ class ease_parser
 										);
 										if($button_reference=='create' || $button_reference=='creating') {
 											// this was a BUTTON INPUT tag with a CREATE action;  check if this is an EDIT form
-											if($_SESSION['ease_forms'][$form_id]['row_uuid']!='') {
+											if(isset($_SESSION['ease_forms'][$form_id]['row_uuid'])) {
 												// this is an EDIT form; remove this button from the form
 												return '';
 											}
@@ -3807,7 +3866,7 @@ class ease_parser
 											);
 										} elseif($button_reference=='update' || $button_reference=='updating') {
 											// this was a BUTTON INPUT tag with a UPDATE action;  check if this is an EDIT form
-											if($_SESSION['ease_forms'][$form_id]['row_uuid']=='') {
+											if(!isset($_SESSION['ease_forms'][$form_id]['row_uuid'])) {
 												// this is not an EDIT form; remove this button from the form
 												return '';
 											}
@@ -3835,7 +3894,7 @@ class ease_parser
 											);
 										} elseif($button_reference=='delete' || $button_reference=='deleting') {
 											// this was a BUTTON INPUT tag with a DELETE action;  check if this is an EDIT form
-											if($_SESSION['ease_forms'][$form_id]['row_uuid']=='') {
+											if(!isset($_SESSION['ease_forms'][$form_id]['row_uuid'])) {
 												// this is not an EDIT form; remove the button
 												return '';
 											}
@@ -3881,7 +3940,7 @@ class ease_parser
 												);
 											}
 											$_SESSION['ease_forms'][$form_id]['buttons']["button_{$button_reference}"]['action'] = $button_reference;
-											if($_SESSION['ease_forms'][$form_id]['row_uuid']=='') {
+											if(!isset($_SESSION['ease_forms'][$form_id]['row_uuid'])) {
 												$_SESSION['ease_forms'][$form_id]['buttons']["button_{$button_reference}"]['handler'] = 'add_row_to_googlespreadsheet';
 											} else {
 												$_SESSION['ease_forms'][$form_id]['buttons']["button_{$button_reference}"]['handler'] = 'update_row_in_googlespreadsheet';
@@ -3921,7 +3980,7 @@ class ease_parser
 											'quote'=>'"',
 											'value'=>htmlspecialchars($_SESSION['ease_forms'][$form_id]['post_values'][$input_attributes_by_key['name']['value']])
 										);
-									} elseif($_SESSION['ease_forms'][$form_id]['row_uuid']) {
+									} elseif(isset($_SESSION['ease_forms'][$form_id]['row_uuid'])) {
 										if($spreadsheet_meta_data['column_letter_by_name'][$header_reference]) {
 											$column_letter = $spreadsheet_meta_data['column_letter_by_name'][$header_reference];
 										} else {
@@ -4121,7 +4180,7 @@ class ease_parser
 										);
 									}
 									// if this is an edit form, default the selected OPTION to the existing value
-									if($_SESSION['ease_forms'][$form_id]['row_uuid']) {
+									if(isset($_SESSION['ease_forms'][$form_id]['row_uuid'])) {
 										if($spreadsheet_meta_data['column_letter_by_name'][$header_reference]) {
 											$column_letter = $spreadsheet_meta_data['column_letter_by_name'][$header_reference];
 										} else {
@@ -4240,7 +4299,7 @@ class ease_parser
 								if(isset($_SESSION['ease_forms'][$form_id]['post_values'][$textarea_attributes_by_key['name']['value']])) {
 									// this is an edit form, populate the textarea with the current value for the instance
 									$return .= htmlspecialchars($_SESSION['ease_forms'][$form_id]['post_values'][$textarea_attributes_by_key['name']['value']]);
-								} elseif($_SESSION['ease_forms'][$form_id]['row_uuid']) {
+								} elseif(isset($_SESSION['ease_forms'][$form_id]['row_uuid'])) {
 									if($spreadsheet_meta_data['column_letter_by_name'][$header_reference]) {
 										$column_letter = $spreadsheet_meta_data['column_letter_by_name'][$header_reference];
 									} else {
@@ -4530,6 +4589,31 @@ class ease_parser
 						// an END FORM tag was not found, display an error
 						$this->output_buffer .= "<div style='margin:5px; color:red;'>Error!  EASE FORM without an END FORM tag.</div>";
 					}
+					// store a form info backup in the database
+					if($this->core->db) {
+						$query = $this->core->db->prepare("	REPLACE INTO ease_forms
+																(form_id, base64_serialized_form_info)
+															VALUES
+																(:form_id, :base64_serialized_form_info);	");
+						$params = array(
+							':form_id'=>$form_id,
+							':base64_serialized_form_info'=>base64_encode(serialize($_SESSION['ease_forms'][$form_id]))
+						);
+						$result = $query->execute($params);
+						if(!$result) {
+							// the query failed... attempt to create the ease_forms table, then try again
+							$this->core->db->exec("	DROP TABLE IF EXISTS ease_forms;
+													CREATE TABLE ease_forms (
+														form_id VARCHAR(64) NOT NULL PRIMARY KEY,
+														created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+														base64_serialized_form_info TEXT NOT NULL DEFAULT ''
+													);	");
+							$result = $query->execute($params);
+							if(!$result) {
+								// error... couldn't cache form info... unless session cookie is relayed, the form will fail
+							}
+						}
+					}
 					// done processing FORM - FOR GOOGLE SHEET, return to process the remaining body
 					return;
 				}
@@ -4673,7 +4757,7 @@ class ease_parser
 							);
 							// build an array containing the email message and headers
 							$mail_options = array();
-							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='') {
+							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='' && !$this->core->include_disabled) {
 								// parse the bodypage using any supplied HTTP ?query string
 								$send_email_espx_body_url_parts = explode('?', ltrim($send_email_attributes['bodypage'], '/'), 2);
 								if(count($send_email_espx_body_url_parts)==2) {
@@ -4684,7 +4768,7 @@ class ease_parser
 									$send_email_espx_filepath = $this->core->application_root . DIRECTORY_SEPARATOR . preg_replace('/\.espx$/i', '', $send_email_attributes['bodypage']) . '.espx';
 									$send_email_url_params = null;
 								}
-								$send_email_espx_body = file_get_contents($send_email_espx_filepath);
+								$send_email_espx_body = @file_get_contents($send_email_espx_filepath);
 								$send_email_page_parser = new ease_parser($this->core, $send_email_url_params);
 								$send_email_attributes['body'] = $send_email_page_parser->process($send_email_espx_body, true);
 								$send_email_page_parser = null;
@@ -4987,7 +5071,7 @@ class ease_parser
 								$existing_row = $query->fetch(PDO::FETCH_ASSOC);
 							} else {
 								// inject an Invalid SQL Table Instance UUID error into the output buffer
-								$this->output_buffer .= "<span style='color:red; font-weight:bold;'>EASE FORM ERROR!</span> - Invalid SQL Record ID:&nbsp;&nbsp;<b>" . htmlspecialchars("$sql_table_name.$instance_uuid") . "</b>";
+								$this->output_buffer .= "<span style='color:red; font-weight:bold;'>EASE FORM ERROR!</span> - Invalid SQL Table Record ID:&nbsp;&nbsp;<b>" . htmlspecialchars("$sql_table_name.$instance_uuid") . "</b>";
 								// remove the form body and the END FORM tag from the remaining unprocessed body, and abort processing this form
 								$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
 								return;
@@ -4996,6 +5080,7 @@ class ease_parser
 					
 						// process the form body for any EASE
 						$tokenized_form_body = $this->string_to_tokenized_ease($form_body);
+						$this->core->globals['system.processed_form_body'] = '';
 						$params = array('save_to_global_variable'=>'system.processed_form_body', 'no_local_injection'=>true);
 						$this->process_tokenized_ease($tokenized_form_body, $params);
 						if(isset($this->core->redirect) && trim($this->core->redirect)!='') {
@@ -5925,6 +6010,31 @@ class ease_parser
 						// remove the parsed form body and the END FORM block from the remaining unprocessed body
 						$this->unprocessed_body = substr($this->unprocessed_body, strlen($matches[0]));
 					}
+					// store a form info backup in the database
+					if($this->core->db) {
+						$query = $this->core->db->prepare("	REPLACE INTO ease_forms
+																(form_id, base64_serialized_form_info)
+															VALUES
+																(:form_id, :base64_serialized_form_info);	");
+						$params = array(
+							':form_id'=>$form_id,
+							':base64_serialized_form_info'=>base64_encode(serialize($_SESSION['ease_forms'][$form_id]))
+						);
+						$result = $query->execute($params);
+						if(!$result) {
+							// the query failed... attempt to create the ease_forms table, then try again
+							$this->core->db->exec("	DROP TABLE IF EXISTS ease_forms;
+													CREATE TABLE ease_forms (
+														form_id VARCHAR(64) NOT NULL PRIMARY KEY,
+														created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+														base64_serialized_form_info TEXT NOT NULL DEFAULT ''
+													);	");
+							$result = $query->execute($params);
+							if(!$result) {
+								// error... couldn't cache form info... unless session cookie is relayed, the form will fail
+							}
+						}
+					}
 					// done processing FORM - FOR SQL TABLE, return to process the remaining body
 					return;
 				}
@@ -6122,7 +6232,7 @@ class ease_parser
 										$key = strtoupper($key);
 									} else {
 										// the column name wasn't found and wasn't likely referenced by column letter
-										// reload the meta data cache for the spreadsheet
+										// reload the meta data cache for the Google Sheet
 										$this->core->flush_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id']);
 										$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id'], $list_from_sheet);
 										if(isset($spreadsheet_meta_data['column_letter_by_name'][$key])) {
@@ -6404,6 +6514,9 @@ class ease_parser
 								}
 								$php_conditional_string = '';
 								foreach($include_conditionals as $include_conditional) {
+									if(!isset($row_cells_by_column_letter[$include_conditional['column_letter']])) {
+										$row_cells_by_column_letter[$include_conditional['column_letter']] = '';
+									}
 									$php_conditional_string .= $include_conditional['logical_operator']
 										. $include_conditional['logical_negator']
 										. $include_conditional['start_group']
@@ -6432,7 +6545,7 @@ class ease_parser
 										$key = strtoupper($total_column);
 									} else {
 										// the column name wasn't found and wasn't likely referenced by column letter
-										// reload the meta data cache for the spreadsheet
+										// reload the meta data cache for the Google Sheet
 										$this->core->flush_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id']);
 										$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id'], $list_from_sheet);
 										if(isset($spreadsheet_meta_data['column_letter_by_name'][$total_column])) {
@@ -6780,6 +6893,11 @@ class ease_parser
 											$from_key = 'uuid';
 										}
 										if($to_key=='id') {
+											$to_key = 'uuid';
+										}
+										if($to_key==$from_key && !in_array($to_key, $existing_relation_columns[$to_bucket])) {
+											// this was likely a relate directive like:   relate product_id to products;
+											// that would first look for products.product_id, but if that column doesn't exist, join on the products.uuid
 											$to_key = 'uuid';
 										}
 										if(in_array(strtolower(trim($matches[1])), array('must', 'force', 'require', 'always'))) {
@@ -7271,7 +7389,7 @@ class ease_parser
 						}
 						if($order_by_sql_string=='') {
 							// no sorting options provided... default sorting by creation date
-							$order_by_sql_string = " ORDER BY `$sql_table_name`.created_on ASC ";
+							$order_by_sql_string = " ORDER BY `$namespaced_sql_table_name`.created_on ASC ";
 						}
 						$query = "SELECT $select_clause_sql_string FROM `$namespaced_sql_table_name` $join_sql_string $where_sql_string $order_by_sql_string;";
 						$list_rows = array();
@@ -7422,8 +7540,8 @@ class ease_parser
 								// calculate the row range for the indexed page
 								if($rows_of_sql_table!=null) {
 									// this is a paged relation list
-									$indexed_page_start = $start_and_end_by_page[$indexed_page]['start'];
-									$indexed_page_end = $start_and_end_by_page[$indexed_page]['end'];
+									$indexed_page_start = @$start_and_end_by_page[$indexed_page]['start'];
+									$indexed_page_end = @$start_and_end_by_page[$indexed_page]['end'];
 								} else {
 									$indexed_page_start = (($indexed_page - 1) * $rows_per_page) + 1;
 									$indexed_page_end = $indexed_page_start + ($rows_per_page - 1);
@@ -7695,6 +7813,11 @@ class ease_parser
 											$from_key = 'uuid';
 										}
 										if($to_key=='id') {
+											$to_key = 'uuid';
+										}
+										if($to_key==$from_key && !in_array($to_key, $existing_relation_columns[$to_bucket])) {
+											// this was likely a relate directive like:   relate product_id to products;
+											// that would first look for products.product_id, but if that column doesn't exist, join on the products.uuid
 											$to_key = 'uuid';
 										}
 										if(in_array(strtolower(trim($matches[1])), array('must', 'force', 'require', 'always'))) {
@@ -8154,7 +8277,7 @@ class ease_parser
 
 							// build the email message and headers according to the type
 							$mail_options = array();
-							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='') {
+							if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='' && !$this->core->include_disabled) {
 								// parse the bodypage using any supplied HTTP ?query string
 								$send_email_espx_body_url_parts = explode('?', ltrim($send_email_attributes['bodypage'], '/'), 2);
 								if(count($send_email_espx_body_url_parts)==2) {
@@ -8165,7 +8288,7 @@ class ease_parser
 									$send_email_espx_filepath = $this->core->application_root . DIRECTORY_SEPARATOR . preg_replace('/\.espx$/i', '', $send_email_attributes['bodypage']) . '.espx';
 									$send_email_url_params = null;
 								}
-								$send_email_espx_body = file_get_contents($send_email_espx_filepath);
+								$send_email_espx_body = @file_get_contents($send_email_espx_filepath);
 								$send_email_page_parser = new ease_parser($this->core, $send_email_url_params);
 								$send_email_attributes['body'] = $send_email_page_parser->process($send_email_espx_body, true);
 								$send_email_page_parser = null;
@@ -8642,7 +8765,7 @@ class ease_parser
 							$where_sql_string = "WHERE $where_sql_string";
 						}
 						if($order_by_sql_string=='') {
-							$order_by_sql_string = " ORDER BY `$sql_table_name`.created_on ASC ";
+							$order_by_sql_string = " ORDER BY `$namespaced_sql_table_name`.created_on ASC ";
 						}
 						// store the SQL query strings in the session so a query can be reconstructed by the form handler
 						@$_SESSION['ease_forms'][$form_id]['join_sql_string'] = $join_sql_string;
@@ -8833,14 +8956,39 @@ class ease_parser
 							}
 						}
 					}
+					// store a form info backup in the database
+					if($this->core->db) {
+						$query = $this->core->db->prepare("	REPLACE INTO ease_forms
+																(form_id, base64_serialized_form_info)
+															VALUES
+																(:form_id, :base64_serialized_form_info);	");
+						$params = array(
+							':form_id'=>$form_id,
+							':base64_serialized_form_info'=>base64_encode(serialize($_SESSION['ease_forms'][$form_id]))
+						);
+						$result = $query->execute($params);
+						if(!$result) {
+							// the query failed... attempt to create the ease_forms table, then try again
+							$this->core->db->exec("	DROP TABLE IF EXISTS ease_forms;
+													CREATE TABLE ease_forms (
+														form_id VARCHAR(64) NOT NULL PRIMARY KEY,
+														created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+														base64_serialized_form_info TEXT NOT NULL DEFAULT ''
+													);	");
+							$result = $query->execute($params);
+							if(!$result) {
+								// error... couldn't cache form info... unless session cookie is relayed, the form will fail
+							}
+						}
+					}
 					// done processing CHECKLIST FORM for SQL Table, return to process the remaining body
 					return;
 				}
 			}
 
 			###############################################
-			##	JSON FOR SPREADSHEETS - only works as a standalone tag
-			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*json\s+for\s+spreadsheets\s*(\.|;){0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
+			##	JSON FOR GOOGLESHEETS - only works as a standalone tag
+			if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*json\s+for\s+(google\s*|)(spread|)sheets\s*(\.|;){0,1}\s*' . preg_quote($this->core->ease_block_end, '/') . '/is', $this->unprocessed_body, $matches)) {
 				// initialize a Google Sheets API client
 				$this->core->validate_google_access_token();
 				require_once 'ease/lib/Spreadsheet/Autoloader.php';
@@ -8890,7 +9038,7 @@ class ease_parser
 		}
 	}
 
-	// this function should only be called when $this->unprocessed_body begins with a PHP start sequence
+	// this function should only be called when $this->unprocessed_body begins with the start sequence for PHP
 	function process_php_block() {
 		// tokenize the PHP code, stopping when an end sequence for a PHP Block is found
 		$tokens = token_get_all($this->unprocessed_body);
@@ -8947,14 +9095,14 @@ class ease_parser
 		}
 	}
 
-	// this function will parse a string for EASE and PHP Blocks, and return a tokenized array
+	// this function will parse a string as EASE, and return a tokenized array
 	public function string_to_tokenized_ease($string, $conditional_block=false) {
 		// ensure an interpreter has been initiated for injecting EASE variable values and applying contexts
 		if($this->interpreter===null) {
 			require_once 'ease/interpreter.class.php';
 			$this->interpreter = new ease_interpreter($this, $this->override_url_params);
 		}
-		// initialize the response array
+		// initialize the token array
 		$tokenized_ease = array();
 		// remove any multi-line EASE Comment Tags
 		$string = preg_replace_callback(
@@ -8968,13 +9116,15 @@ class ease_parser
 		if(preg_match('/^\s*' . preg_quote($this->core->ease_block_start, '/') . '\s*(' . preg_quote($this->core->ease_block_start, '/') .  '.*)' . preg_quote($this->core->ease_block_end, '/') .  '\s*$/is', $string, $matches)) {
 			$string = $matches[1];
 		}
-		// process the remaining string by line, looking for the start sequence of EASE & PHP
+		// process the remaining string by line, looking for the start sequence of EASE or PHP
 		$counter = 0;
 		$last_line = false;
 		while(sizeof($string) > 0) {
+			// a global variable injecting itself could result in an infinite loop
+			// keep a counter to limit recursion
 			$counter++;
 			if($counter > 1000000) {
-				echo "EASE parser recursion limit exceeded";
+				echo 'Error!  EASE Parser recursion limit exceeded';
 				exit;
 			}
 			// find the next end-of-line character in the remaining string
@@ -9015,9 +9165,9 @@ class ease_parser
 					// a global variable reference was injected into the content preceeding the start sequence of EASE
 					$string_line = $matches[1] . $matches[2];
 				} else {
-					// no global variable EASE Tag found... check for a single line EASE block on the same line and before the start sequence of PHP
-					if(preg_match('/(.*?)(' . preg_quote($this->core->ease_block_start, '/') . '\s*([^\s\[\'"].*|$))/i', $matches[1], $inner_matches)) {
-						
+					// no global variable EASE Tag found... check for a single line EASE Tag on the same line and before the start sequence of PHP
+					if(preg_match('/(.*?)(' . preg_quote($this->core->ease_block_start, '/') . '\s*([^\s\[\'"].*|$))/i', $matches[1], $inner_matches)) {						
+						// single line EASE Tag found before the PHP block... process that first
 						goto scan_for_ease;
 					}
 					break;
@@ -9262,20 +9412,54 @@ class ease_parser
 				}
 
 				###############################################
+				##	EMPTY BUCKET *BUCKET-NAME* / PRINT BUCKET *BUCKET-NAME*
+				if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*(empty|clear|clean|flush|html\s*dump|show|print|echo)\s*(local\s*|)bucket\s*([^;]+?)\s*;/is', $string, $matches)) {
+					// inject any global variables into the bucket name
+					switch(preg_replace('/[^a-z]+/s', '', strtolower($matches[1]))) {
+						case 'empty':
+						case 'clear':
+						case 'clean':
+						case 'flush':
+							if(trim(strtolower($matches[2]))=='local') {
+								$tokenized_ease[] = array('empty_local_bucket'=>$matches[3]);
+							} else {
+								$tokenized_ease[] = array('empty_bucket'=>$matches[3]);
+							}
+							break;
+						case 'htmldump':
+						case 'show':
+						case 'print':
+						case 'echo':
+							if(trim(strtolower($matches[2]))=='local') {
+								$tokenized_ease[] = array('print_local_bucket'=>$matches[3]);
+							} else {
+								$tokenized_ease[] = array('print_bucket'=>$matches[3]);
+							}
+							break;
+						default:
+					}
+					// remove the BUCKET command from the EASE block, then process any remains
+					$string = $this->core->ease_block_start . substr($string, strlen($matches[0]));
+					continue;
+				}
+
+				###############################################
 				##	INCLUDE "QUOTED-STRING"
 				if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*include\s*"(.*?)"\s*[\.;]{0,1}\s*/is', $string, $matches)) {
 					// inject any global variables into the page filepath
 					$this->interpreter->inject_global_variables($matches[1]);
 					$included_file_content = '';
-					// get the content of the included file... don't allow doubly including the local header.espx or footer.espx files
-					if($matches[1]!='header.espx' && $matches[1]!='footer.espx') {
-						$include_file_path = str_replace('/', DIRECTORY_SEPARATOR, $matches[1]);
-						if(substr($matches[1], 0, 1)=='/' && file_exists($this->core->application_root . $include_file_path)) {
-							$included_file_content = file_get_contents($this->core->application_root . $include_file_path);
-						} else {
-							$included_file_content = @file_get_contents($include_file_path, FILE_USE_INCLUDE_PATH);
-						}
-					} 
+					if(!$this->core->include_disabled) {
+						// get the content of the included file... don't allow doubly including the local header.espx or footer.espx files
+						if($matches[1]!='header.espx' && $matches[1]!='footer.espx') {
+							$include_file_path = str_replace('/', DIRECTORY_SEPARATOR, $matches[1]);
+							if(substr($matches[1], 0, 1)=='/' && file_exists($this->core->application_root . $include_file_path)) {
+								$included_file_content = @file_get_contents($this->core->application_root . $include_file_path);
+							} else {
+								$included_file_content = @file_get_contents($include_file_path, FILE_USE_INCLUDE_PATH);
+							}
+						} 
+					}
 					// replace the INCLUDE tag from the remaining unprocessed string with the contents of the included file
 					$string = $included_file_content . $this->core->ease_block_start . substr($string, strlen($matches[0]));
 					continue;
@@ -9328,7 +9512,7 @@ class ease_parser
 					);
 					// build the email message and headers according to the type
 					$mail_options = array();
-					if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='') {
+					if(isset($send_email_attributes['bodypage']) && trim($send_email_attributes['bodypage'])!='' && !$this->core->include_disabled) {
 						// parse the bodypage using any supplied HTTP ?query string
 						$send_email_espx_body_url_parts = explode('?', ltrim($send_email_attributes['bodypage'], '/'), 2);
 						if(count($send_email_espx_body_url_parts)==2) {
@@ -9339,7 +9523,7 @@ class ease_parser
 							$send_email_espx_filepath = $this->core->application_root . DIRECTORY_SEPARATOR . preg_replace('/\.espx$/i', '', $send_email_attributes['bodypage']) . '.espx';
 							$send_email_url_params = null;
 						}
-						$send_email_espx_body = file_get_contents($send_email_espx_filepath);
+						$send_email_espx_body = @file_get_contents($send_email_espx_filepath);
 						$send_email_page_parser = new ease_parser($this->core, $send_email_url_params);
 						$send_email_attributes['body'] = $send_email_page_parser->process($send_email_espx_body, true);
 						$send_email_page_parser = null;
@@ -9638,6 +9822,17 @@ class ease_parser
 					continue;
 				}
 				
+				###############################################
+				##	APPLY ROW
+				if(preg_match('/^' . preg_quote($this->core->ease_block_start, '/') . '\s*apply\s+row\s+(?:and\s+reference\s+|reference\s+|)(?:as\s*"\s*(\V*?)\s*"|as\s*([a-z0-9_\.]+)|)\s*;\s*/is', $string, $matches)) {
+					$apply_row = array();
+					$apply_row['as'] = $matches[1] . $matches[2];
+					$tokenized_ease[] = array('apply_row'=>$apply_row);
+					// remove the APPLY ROW command from the EASE block, then process any remains
+					$string = $this->core->ease_block_start . substr($string, strlen($matches[0]));
+					continue;
+				}
+				
 				// !! ANY NEW EASE COMMANDS GET ADDED HERE
 
 				// a valid EASE command was not found at the start of this block.  print it raw, then process the remains
@@ -9649,7 +9844,7 @@ class ease_parser
 						$string = '';
 						continue;
 					} else {
-						// start sequence of EASE with no end sequence... print the start sequence of EASE, then process then remains
+						// start sequence of EASE with no end sequence... print the start sequence of EASE, then continue processing the remains
 						$tokenized_ease[] = array('print'=>$this->core->ease_block_start);
 						$string = substr($string, strlen($this->core->ease_block_start));
 						continue;
@@ -9697,7 +9892,7 @@ class ease_parser
 		return $tokenized_ease;
 	}
 
-	// this function will process an array of tokenized EASE and PHP Blocks, applying parameters for output and variable injection
+	// this function will process an array of tokenized EASE, applying parameters for variable injection and output
 	public function process_tokenized_ease($tokenized_ease, &$params=array()) {
 		// process any parameters for variable injection and output buffering
 		if(isset($params['save_to_global_variable']) && trim($params['save_to_global_variable'])!='') {
@@ -9854,7 +10049,7 @@ class ease_parser
 								if($this->core->catch_redirect) {
 									// EASE Framework configured to catch redirects
 									$this->core->redirect = $directives;
-									// halt processing anything after the redirect
+									// don't process anything after the redirect
 									$this->unprocessed_body = '';
 									return;
 								} else {
@@ -10268,7 +10463,7 @@ class ease_parser
 										}
 									}
 								}
-								// initialize a google Google Sheet API client
+								// initialize a Google Sheet API client
 								$this->core->validate_google_access_token();
 								require_once 'ease/lib/Spreadsheet/Autoloader.php';
 								$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
@@ -10340,7 +10535,7 @@ class ease_parser
 											$header_row_csv .= $prefix . '""';
 											$header_row_count++;
 										}
-										// add column for unique row ID used by the EASE core to enable row update and delete
+										// add column for unique EASE Row ID used by the EASE core to enable row update and delete
 										$header_row_csv .= $prefix . '"EASE Row ID"';
 										$header_row_csv .= "\r\n";
 										// add 100 blank rows
@@ -10404,7 +10599,7 @@ class ease_parser
 											$header_row[] = '';
 											$header_row_count++;
 										}
-										// add column for unique row ID used by the EASE core to enable row update and delete
+										// add column for unique EASE Row ID used by the EASE core to enable row update and delete
 										$header_row[] = 'EASE Row ID';
 										$new_worksheet_rows = 100;
 										if(count($header_row) < 20) {
@@ -10552,7 +10747,7 @@ class ease_parser
 										}
 									}
 								}
-								// initialize a google Google Sheet API client
+								// initialize a Google Sheet API client
 								$this->core->validate_google_access_token();
 								require_once 'ease/lib/Spreadsheet/Autoloader.php';
 								$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
@@ -10624,7 +10819,7 @@ class ease_parser
 											$header_row_csv .= $prefix . '""';
 											$header_row_count++;
 										}
-										// add column for unique row ID used by the EASE core to enable row update and delete
+										// add column for unique EASE Row ID used by the EASE core to enable row update and delete
 										$header_row_csv .= $prefix . '"EASE Row ID"';
 										$header_row_csv .= "\r\n";
 										// add 100 blank rows
@@ -10688,7 +10883,7 @@ class ease_parser
 											$header_row[] = '';
 											$header_row_count++;
 										}
-										// add column for unique row ID used by the EASE core to enable row update and delete
+										// add column for unique EASE Row ID used by the EASE core to enable row update and delete
 										$header_row[] = 'EASE Row ID';
 										$new_worksheet_rows = 100;
 										if(count($header_row) < 20) {
@@ -10736,45 +10931,31 @@ class ease_parser
 										}
 									}
 								}
-								// update any set values for the Google Sheet row
+								// check if any values were set to update the Google Sheet Row
 								if(isset($updated_row)) {
-									$alphas = array();
-									for($i='A'; $i<'ZZ'; $i++) {
-										$alphas[] = $i;
-									}
-									$cellFeed = $worksheet->getCellFeed();
-									$cellEntries = $cellFeed->getEntries();
-									// build array of row number by EASE Row ID
-									$row_number_by_ease_row_id = array();
-									foreach($cellEntries as $cellEntry) {
-										$cell_title = $cellEntry->getTitle();
-										if(preg_match('/([A-Z]+)([0-9]+)/is', $cell_title, $matches)) {
-											if($matches[1]==$spreadsheet_meta_data['column_letter_by_name']['easerowid']) {
-												$row_number_by_ease_row_id[$cellEntry->getContent()] = $matches[2];
-											}
-										}
-									}
-									// update each cell in the row
+									// new values found... update the Google Sheet Row
 									foreach($updated_row as $key=>$value) {
 										$key = preg_replace('/(^[0-9]+|[^a-z0-9]+)/s', '', strtolower($key));
 										if(isset($spreadsheet_meta_data['column_name_by_letter'][strtoupper($key)])) {
-											// the column was referenced by column letter
-											$column_number = array_search(strtoupper($key), $alphas) + 1;
-											$cellEntry->setContent($value);
-											$cellEntry->setCell($row_number_by_ease_row_id[$directives['row_uuid']], $column_number);
-											$cellEntry->update();
+											// the column was referenced by column letter... change it to reference the column header name
+											unset($updated_row[$key]);
+											$updated_row[$spreadsheet_meta_data['column_name_by_letter'][strtoupper($key)]] = $value;
 										} elseif(isset($spreadsheet_meta_data['column_letter_by_name'][$key])) {
 											// the column was referenced by an existing column header name
-											$column_number = array_search($spreadsheet_meta_data['column_letter_by_name'][$key], $alphas) + 1;
-											$cellEntry->setContent($value);
-											$cellEntry->setCell($row_number_by_ease_row_id[$directives['row_uuid']], $column_number);
-											$cellEntry->update();
 										} else {
 											// the referenced column wasn't found in the cached Google Sheet meta data...
 											//	dump the cache and reload it, then check again... if it still isn't found, create it
 											// TODO!! consolidate all the code that does this into a core function
 										}
 									}
+									// query for the row to update
+									$listFeed = $worksheet->getListFeed('', '', "easerowid = \"{$directives['row_uuid']}\"");
+									$listEntries = $listFeed->getEntries();
+									// update the row that matched the requested EASE Row ID value
+									foreach($listEntries as $listEntry) {
+										$listEntry->update($updated_row);
+									}
+									// TODO!! if the record wasn't found, create a new record instead
 								}
 								break;
 							case 'delete_spreadsheet_record':
@@ -10800,7 +10981,7 @@ class ease_parser
 										$this->interpreter->inject_local_spreadsheet_variables($directives['row_uuid'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
 									}
 								}
-								// initialize a google Google Sheet API client
+								// initialize a Google Sheet API client
 								$this->core->validate_google_access_token();
 								require_once 'ease/lib/Spreadsheet/Autoloader.php';
 								$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
@@ -10813,7 +10994,7 @@ class ease_parser
 									$spreadSheet = $spreadsheetService->getSpreadsheetById($directives['spreadsheet_id']);
 									if($spreadSheet===null) {
 										$this->core->flush_meta_data_for_google_spreadsheet_by_id($directives['spreadsheet_id']);
-										// the spreadsheet doesn't exist... nothing to delete
+										// the Google Sheet doesn't exist... nothing to delete
 										break;
 									}
 									$google_spreadsheet_id = $directives['spreadsheet_id'];
@@ -10821,13 +11002,13 @@ class ease_parser
 									$spreadsheetFeed = $spreadsheetService->getSpreadsheets();
 									$spreadSheet = $spreadsheetFeed->getByTitle($directives['spreadsheet_name']);
 									if($spreadSheet===null) {
-										// the spreadsheet doesn't exist... nothing to delete
+										// the Google Sheet doesn't exist... nothing to delete
 										break;
 									}
 								}
 								// check for unloaded Google Sheet
 								if($spreadSheet===null) {
-									// the spreadsheet doesn't exist... nothing to delete
+									// the Google Sheet doesn't exist... nothing to delete
 									break;
 								}
 								// load the worksheets in the Google Sheet
@@ -10870,29 +11051,12 @@ class ease_parser
 										}
 									}
 								}
-								// create lookup table for Column Number to Column Letter
-								$alphas = array();
-								for($i='A'; $i<'ZZ'; $i++) {
-									$alphas[] = $i;
-								}
-								$cellFeed = $worksheet->getCellFeed();
-								$cellEntries = $cellFeed->getEntries();
-								// build array of row number by EASE Row ID
-								$row_number_by_ease_row_id = array();
-								foreach($cellEntries as $cellEntry) {
-									$cell_title = $cellEntry->getTitle();
-									if(preg_match('/([A-Z]+)([0-9]+)/is', $cell_title, $cell_matches)) {
-										if($cell_matches[1]==$spreadsheet_meta_data['column_letter_by_name']['easerowid']) {
-											$row_number_by_ease_row_id[$cellEntry->getContent()] = $cell_matches[2];
-										}
-									}
-								}
-								// blank out each cell in the referenced row
-								foreach($spreadsheet_meta_data['column_letter_by_name'] as $key) {
-									$column_number = array_search(strtoupper($key), $alphas) + 1;
-									$cellEntry->setContent('');
-									$cellEntry->setCell($row_number_by_ease_row_id[$directives['row_uuid']], $column_number);
-									$cellEntry->update();
+								// query for the row to delete
+								$listFeed = $worksheet->getListFeed('', '', "easerowid = \"{$directives['row_uuid']}\"");
+								$listEntries = $listFeed->getEntries();
+								// delete all rows that matched the requested EASE Row ID value
+								foreach($listEntries as $listEntry) {
+									$listEntry->delete();
 								}
 								break;
 							case 'apply_sql_record':
@@ -11194,6 +11358,119 @@ class ease_parser
 									$query->execute(array(':uuid'=>$key));
 								}
 								break;
+							case 'apply_row':
+								$this->interpreter->inject_global_variables($directives['as']);
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives['as'], $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives['as'], $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives['as'], $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
+								}
+								if(!in_array(strtolower($directives['as']), $this->core->reserved_buckets)) {
+									$bucket_name = strtolower($directives['as']) . '.';
+									foreach($this->local_variables['row'] as $key=>$value) {
+										$this->core->globals["$bucket_name.$key"] = $value;
+									}
+								}
+								break;
+							case 'empty_bucket':
+								$this->interpreter->inject_global_variables($directives);
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives, $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
+								}
+								if(!in_array(strtolower($directives), $this->core->reserved_buckets)) {
+									$bucket_name = strtolower($directives) . '.';
+									$bucket_name_length = strlen($bucket_name);
+									// process every global variable looking for the referenced bucket
+									foreach($this->core->globals as $key=>$value) {
+										if(substr($key, 0, $bucket_name_length)==$bucket_name) {
+											// a global variable was found matching the referenced bucket... unset it
+											unset($this->core->globals[$key]);
+										}
+									}
+								}
+								break;
+							case 'empty_local_bucket':
+								$this->interpreter->inject_global_variables($directives);
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives, $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
+								}
+								unset($this->local_variables[strtolower($directives)]);
+								break;
+							case 'print_bucket':
+								$this->interpreter->inject_global_variables($directives);
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives, $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
+								}
+								if(!in_array(strtolower($directives), $this->core->reserved_buckets)) {
+									$bucket_name = strtolower($directives) . '.';
+									$bucket_name_length = strlen($bucket_name);
+									// process every global variable looking for the referenced bucket
+									$bucket_array = array();
+									foreach($this->core->globals as $key=>$value) {
+										if(substr($key, 0, $bucket_name_length)==$bucket_name) {
+											// a global variable was found matching the referenced bucket
+											$bucket_pointer = &$bucket_array;							
+											// process the key to build an associative array of the bucket
+											// indexes are denoted with a period .  (ex: my_bucket.name, my_bucket.address.city)
+											$key_parts = explode('.', $key);
+											unset($key_parts[0]);
+											foreach($key_parts as $key_part) {
+												if(!isset($bucket_pointer[$key_part])) {
+													$bucket_pointer[$key_part] = null;
+												}
+												$bucket_pointer = &$bucket_pointer[$key_part];
+											}
+											$bucket_pointer = $value;
+										}
+									}
+									$bucket_dump = print_r($bucket_array, true);
+									$this->output_buffer .= '<pre style="tab-size:4;">';
+									$this->output_buffer .= "<b>" . htmlspecialchars($directives) . ":</b> ";
+									$this->output_buffer .= htmlspecialchars($bucket_dump);
+									$this->output_buffer .= '</pre>';
+								}
+								break;
+							case 'print_local_bucket':
+								$this->interpreter->inject_global_variables($directives);
+								if(!$no_local_injection) {
+									if(isset($inject_local_sql_row_variables)) {
+										$this->interpreter->inject_local_sql_row_variables($directives, $params['row'], $params['sql_table_name'], $this->local_variables);
+									} elseif(isset($inject_local_spreadsheet_row_variables)) {
+										$this->interpreter->inject_local_spreadsheet_row_variables($directives, $params['column_letter_by_name'], $params['cell_value_by_column_letter'], $this->local_variables, 'html');
+									} elseif(isset($inject_local_spreadsheet_variables)) {
+										$this->interpreter->inject_local_spreadsheet_variables($directives, $params['column_letter_by_name'], $params['cells_by_row_by_column_letter'], 'html');
+									}
+								}
+								// process every local variable looking for the referenced bucket
+								$bucket_array = $this->local_variables[strtolower($directives)];
+								$bucket_dump = print_r($bucket_array, true);
+								$this->output_buffer .= '<pre style="tab-size:4;">';
+								$this->output_buffer .= "<b>" . htmlspecialchars($directives) . ":</b> ";
+								$this->output_buffer .= htmlspecialchars($bucket_dump);
+								$this->output_buffer .= '</pre>';
+								break;
 							default:
 							// unrecognized token
 						}
@@ -11203,7 +11480,7 @@ class ease_parser
 		}
 	}
 
-	// this function is called at most once per request to inject pager style when an EASE List with a pager is processed
+	// this function is called at most once per request to inject HTML CSS style when an EASE List Pager is used
 	function inject_pager_style() {
 		if(!isset($this->core->globals['system.included_default_pager_style'])) {
 			// default the pager colors
@@ -11322,9 +11599,9 @@ class ease_parser
 	}
 
 	################################################################################
-	##	EASE Framework Functions
+	##	EASE Framework PHP Functions
 	##
-	##	the following functions are all made globally callable from EASE PHP Blocks
+	##	the following functions are all globally callable from PHP Blocks in EASE
 
 	function ease_get_value($name) {
 		$name = trim($name);
@@ -11468,8 +11745,12 @@ class ease_parser
 		return $value;
 	}
 
-	function ease_html_dump($var, $label=null) {
-		return $this->core->html_dump($var, $label);
+	function ease_html_dump($value, $label=null) {
+		return $this->core->html_dump($value, $label);
+	}
+
+	function ease_new_uuid() {
+		return $this->core->new_uuid();
 	}
 
 	function ease_db_query($sql) {
@@ -11491,15 +11772,27 @@ class ease_parser
 	}
 
 	function ease_db_fetch($result) {
-		return $result->fetch(PDO::FETCH_ASSOC);
+		if(is_object($result)) {
+			return $result->fetch(PDO::FETCH_ASSOC);
+		} else {
+			return false;
+		}
 	}
 
 	function ease_db_fetch_column($result, $column=null) {
-		return $result->fetchColumn($column);
+		if(is_object($result)) {
+			return $result->fetchColumn($column);
+		} else {
+			return false;
+		}
 	}
 
 	function ease_db_fetch_all($result) {
-		return $result->fetchAll(PDO::FETCH_ASSOC);
+		if(is_object($result)) {
+			return $result->fetchAll(PDO::FETCH_ASSOC);
+		} else {
+			return array();
+		}
 	}
 
 	function ease_db_get_instance_value($instance, $column) {
@@ -11523,10 +11816,11 @@ class ease_parser
 	function ease_db_get_instance($instance) {
 		$instance_parts = explode('.', $instance, 2);
 		if(count($instance_parts)==2) {
-			$sql_table_name = preg_replace('/[^a-z0-9-]+/is', '_', strtolower(rtrim($instance_parts[0])));
+			$sql_table_name = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($instance_parts[0])), '_');
+			$namespaced_sql_table_name = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($this->core->namespace . '_' . $sql_table_name)), '_');
 			$instance_uuid = ltrim($instance_parts[1]);
 			$column = preg_replace('/[^a-z0-9-]+/is', '_', strtolower($column));
-			$query = $this->core->db->prepare("SELECT * FROM `$sql_table_name` WHERE uuid=:uuid;");
+			$query = $this->core->db->prepare("SELECT * FROM `$namespaced_sql_table_name` WHERE uuid=:uuid;");
 			$params[':uuid'] = $instance_uuid;
 			if($query->execute($params)) {
 				return $query->fetch(PDO::FETCH_ASSOC);
@@ -11541,28 +11835,94 @@ class ease_parser
 	function ease_db_set_instance_value($instance, $column, $value) {
 		$instance_parts = explode('.', $instance, 2);
 		if(count($instance_parts)==2) {
-			$sql_table_name = preg_replace('/[^a-z0-9-]+/s', '_', strtolower(rtrim($instance_parts[0])));
+			$sql_table_name = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($instance_parts[0])), '_');
+			$namespaced_sql_table_name = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($this->core->namespace . '_' . $sql_table_name)), '_');
 			$instance_uuid = ltrim($instance_parts[1]);
-			$column = preg_replace('/[^a-z0-9-]+/s', '_', strtolower($column));
-			$query = $this->core->db->prepare("UPDATE `$sql_table_name` SET `$column`=:$column WHERE uuid=:uuid;");
+			$column = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($column)), '_');
+			$query = $this->core->db->prepare("UPDATE `$namespaced_sql_table_name` SET `$column`=:$column WHERE uuid=:uuid;");
 			$params[":$column"] = (string)$value;
 			$params[':uuid'] = $instance_uuid;
-			return $query->execute($params);
+			$result = $query->execute($params);
+			if(!$result) {
+				// the query failed... attempt to add the column then try again
+				$this->core->db->exec("ALTER TABLE `$namespaced_sql_table_name` ADD COLUMN `$column` text NOT NULL default '';");
+				$result = $query->execute($params);
+				if(!$result) {
+					// the query failed again... attempt to create the table with the referenced column then try again
+					$sql = "CREATE TABLE `$namespaced_sql_table_name` (
+								instance_id int NOT NULL PRIMARY KEY auto_increment,
+								created_on timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+								updated_on timestamp NOT NULL,
+								uuid varchar(32) NOT NULL UNIQUE,
+								`$column` text NOT NULL default ''
+							);	";
+					$this->core->db->exec($sql);
+					$result = $query->execute($params);
+				}
+			}
+			return $result;
 		} else {
 			return false;
 		}
 	}
 
 	function ease_db_create_instance($sql_table_name) {
-		$sql_table_name = preg_replace('/[^a-z0-9_-]+/is', '', strtolower(trim($sql_table_name)));
+		$sql_table_name = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($sql_table_name)), '_');
+		$namespaced_sql_table_name = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($this->core->namespace . '_' . $sql_table_name)), '_');
 		if(!in_array($sql_table_name, $this->core->reserved_sql_tables)) {
 			$new_uuid = $this->core->new_uuid();
-			$query = $this->core->db->prepare("INSERT INTO `$sql_table_name` SET uuid=:uuid;");
+			$query = $this->core->db->prepare("INSERT INTO `$namespaced_sql_table_name` SET uuid=:uuid;");
 			$params[':uuid'] = $new_uuid;
-			$result = $query->execute($params);
+			if(!$query->execute($params)) {
+				// the query failed... create the table and try again
+				$sql = "CREATE TABLE `$namespaced_sql_table_name` (
+							instance_id int NOT NULL PRIMARY KEY auto_increment,
+							created_on timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+							updated_on timestamp NOT NULL,
+							uuid varchar(32) NOT NULL UNIQUE
+						);	";
+				$this->core->db->exec($sql);
+				$query->execute($params);
+			}
 			return $new_uuid;
 		} else {
 			return false;
+		}
+	}
+
+	function ease_db_ensure_table_columns($sql_table_name, $columns=array()) {
+		$sql_table_name = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($sql_table_name)), '_');
+		$namespaced_sql_table_name = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($this->core->namespace . '_' . $sql_table_name)), '_');
+		if(!in_array($sql_table_name, $this->core->reserved_sql_tables)) {
+			// make sure the SQL table exists and has all the columns referenced in the new row
+			$result = $this->core->db->query("DESCRIBE `{$namespaced_sql_table_name}`;");
+			if($result) {
+				// the SQL table exists; make sure all of the columns referenced in the new row exist in the table
+				$existing_columns = $result->fetchAll(PDO::FETCH_COLUMN);
+				foreach($columns as $column) {
+					$column = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($column)), '_');
+					if(!in_array($column, $existing_columns)) {
+						$this->core->db->exec("ALTER TABLE `{$namespaced_sql_table_name}` ADD COLUMN `$column` text NOT NULL default '';");
+					}
+				}
+			} else {
+				// the SQL table doesn't exist; create it with all of the columns referenced in the new row
+				$custom_columns_sql = '';
+				foreach($columns as $column) {
+					$column = trim(preg_replace('/[^a-z0-9]+/s', '_', strtolower($column)), '_');
+					if(!in_array($column, $this->core->reserved_sql_columns)) {
+						$custom_columns_sql .= ", `$column` text NOT NULL default ''";
+					}
+				}
+				$sql = "CREATE TABLE `{$namespaced_sql_table_name}` (
+							instance_id int NOT NULL PRIMARY KEY auto_increment,
+							created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+							updated_on timestamp NOT NULL,
+							uuid varchar(32) NOT NULL UNIQUE
+							$custom_columns_sql
+						);	";
+				$this->core->db->exec($sql);
+			}
 		}
 	}
 
@@ -11576,10 +11936,10 @@ class ease_parser
 		}
 	}
 
-	function ease_insert_row_into_spreadsheet_by_id($row, $spreadsheet_id, $worksheet=null) {
+	function ease_insert_row_into_googlesheet_by_id($row, $spreadsheet_id, $worksheet=null) {
 	}
 
-	function ease_insert_row_into_spreadsheet_by_name($row, $spreadsheet_name, $worksheet=null) {
+	function ease_insert_row_into_googlesheet_by_name($row, $spreadsheet_name, $worksheet=null) {
 	}
 
 	function ease_process($string) {

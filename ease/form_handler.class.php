@@ -15,7 +15,7 @@
 */
 
 /**
- * Form Handler for use with the EASE Core to handle data posted from EASE Forms
+ * Form Handler for use with the EASE Framework to handle data posted from EASE Forms
  *
  * @author Mike <mike@cloudward.com>
  */
@@ -33,14 +33,31 @@ class ease_form_handler
 		// require an interpreter for extracting and applying contexts from variable references in form actions
 		require_once('interpreter.class.php');
 
-		// validate the requested EASE Form ID
-		// TODO! if the user session has expired, form posts will fail... perhaps store the form info in the DB as well, 
-		// - but that eliminates the added layer of security of restricting the post to the current session...
+		// validate the provided EASE Form ID
+		if((!isset($_REQUEST['ease_form_id'])) || trim($_REQUEST['ease_form_id'])=='') {
+			echo 'No EASE Form ID provided';
+			exit;
+		}
+		// check for the form info in the current user session
+		if(!isset($_SESSION['ease_forms'][$_REQUEST['ease_form_id']])) {
+			// form info was not found... check for the form info in the database
+			if($this->core->db) {
+				$query = $this->core->db->prepare('SELECT base64_serialized_form_info FROM ease_forms WHERE form_id=:form_id;');
+				if($query->execute(array(':form_id'=>$_REQUEST['ease_form_id']))) {
+					// query successful, fetch the EASE Form info
+					if($ease_form = $query->fetch(PDO::FETCH_ASSOC)) {
+						// EASE Form info fetched, store it in the current user session
+						$_SESSION['ease_forms'][$_REQUEST['ease_form_id']] = unserialize(base64_decode($ease_form['base64_serialized_form_info']));
+					}
+				}
+			}
+		}
+		// check again for the form info in the current session
 		if(!isset($_SESSION['ease_forms'][$_REQUEST['ease_form_id']])) {
 			echo 'Invalid EASE Form ID: ' . htmlspecialchars($_REQUEST['ease_form_id']);
 			exit;
 		}
-		// load the form info from the session
+		// load the form info from the current user session
 		$this->form_info = $_SESSION['ease_forms'][$_REQUEST['ease_form_id']];
 
 		// confirm that all post restrictions were met  (CAPTCHA, form password, etc...)
@@ -214,16 +231,68 @@ class ease_form_handler
 					$form_url .= "&ease_form_id={$_REQUEST['ease_form_id']}";
 				}
 			}
+			// update the form info in the current user session
 			$_SESSION['ease_forms'][$_REQUEST['ease_form_id']]['post_values'] = $_POST;
 			$_SESSION['ease_forms'][$_REQUEST['ease_form_id']]['invalid_inputs'] = $invalid_inputs;
+			// update the form info backup in the database
+			if($this->core->db) {
+				$query = $this->core->db->prepare("	REPLACE INTO ease_forms
+														(form_id, base64_serialized_form_info)
+													VALUES
+														(:form_id, :base64_serialized_form_info);	");
+				$params = array(
+					':form_id'=>$_REQUEST['ease_form_id'],
+					':base64_serialized_form_info'=>base64_encode(serialize($_SESSION['ease_forms'][$_REQUEST['ease_form_id']]))
+				);
+				$result = $query->execute($params);
+				if(!$result) {
+					// the query failed... attempt to create the ease_forms table, then try again
+					$this->core->db->exec("	DROP TABLE IF EXISTS ease_forms;
+											CREATE TABLE ease_forms (
+												form_id VARCHAR(64) NOT NULL PRIMARY KEY,
+												created_on timestamp NOT NULL default CURRENT_TIMESTAMP, 
+												base64_serialized_form_info TEXT NOT NULL DEFAULT ''
+											);	");
+					$result = $query->execute($params);
+					if(!$result) {
+						// couldn't cache form info backup in the database... if the session cookie isn't relayed, the form won't work
+					}
+				}
+			}
 			header("Location: $form_url");
 			exit;
 		}
 
-		// clean out old forms from the session... consider anything over 3 hours as stale
+		// purge old forms from the current user session... consider anything over 2 hours as old
 		foreach($_SESSION['ease_forms'] as $key=>$value) {
-			if($value['created_on'] < (time() - 60 * 60 * 3)) {
+			if($value['created_on'] < (time() - 60 * 60 * 2)) {
+				// delete the form info from the session... it will stay stored in the DB for 24 hours
 				unset($_SESSION['ease_forms'][$key]);
+			}
+		}
+		
+		// run a lottery to purge form info stored in the DB that is over 24 hours old
+		// 1 in 1000 form posts should result in running a DELETE query over the ease_forms table
+		if($this->core->db) {
+			if(rand(1, 1000)==777) {
+				// lottery win!  execute the DELETE query
+				$result = $this->core->db->exec("DELETE FROM ease_forms WHERE created_on < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 1 DAY)");			
+				if($result===false) {
+					// the DELETE query failed... attempt to add the created_on column
+					$result = $this->core->db->exec("ALTER TABLE ease_forms ADD COLUMN created_on timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP;");
+					if($result) {
+						// the ALTER affected some rows... update their created_on timestamp to now
+						$this->core->db->exec("UPDATE ease_forms SET created_on=CURRENT_TIMESTAMP WHERE created_on=0;");
+					} elseif($result===false) {
+						// the ALTER query failed... attempt to CREATE the ease_forms table from scratch
+						$this->core->db->exec("	DROP TABLE IF EXISTS ease_forms;
+												CREATE TABLE ease_forms (
+													form_id VARCHAR(64) NOT NULL PRIMARY KEY,
+													created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
+													base64_serialized_form_info TEXT NOT NULL DEFAULT ''
+												);	");
+					}
+				}
 			}
 		}
 
@@ -1820,23 +1889,23 @@ class ease_form_handler
 	function add_row_to_googlespreadsheet($action) {
 		// refresh the google access token if necessary
 		$this->core->validate_google_access_token();
-		// initialize a google Google Drive Spreadsheet API client
+		// initialize a google Google Sheet API client
 		require_once 'ease/lib/Spreadsheet/Autoloader.php';
 		$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
 		$serviceRequest = new Google\Spreadsheet\DefaultServiceRequest($request);
 		Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
 		$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
-		// determine if the Google Drive Spreadsheet was referenced by name or ID
+		// determine if the Google Sheet was referenced by name or ID
 		$spreadSheet = null;
 		$new_spreadsheet_created = false;
 		if($this->form_info['google_spreadsheet_id']) {
 			$spreadSheet = $spreadsheetService->getSpreadsheetById($this->form_info['google_spreadsheet_id']);
 			if($spreadSheet===null) {
-				// there was an error loading the Google Drive Spreadsheet by ID...
-				// flush the cached meta data for the Google Drive Spreadsheet ID which may no longer be valid
+				// there was an error loading the Google Sheet by ID...
+				// flush the cached meta data for the Google Sheet ID which may no longer be valid
 				$this->core->flush_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id']);
 				$this->form_info['google_spreadsheet_id'] = '';
-				// try adding the row again using the Google Drive Spreadsheet name (if set) which will automatically re-create the Google Drive Spreadsheet
+				// try adding the row again using the Google Sheet name (if set) which will automatically re-create the Google Sheet
 				$this->add_row_to_googlespreadsheet();
 				exit;
 			}
@@ -1845,8 +1914,8 @@ class ease_form_handler
 			$spreadsheetFeed = $spreadsheetService->getSpreadsheets();
 			$spreadSheet = $spreadsheetFeed->getByTitle($this->form_info['google_spreadsheet_name']);
 			if($spreadSheet===null) {
-				// the supplied Google Drive Spreadsheet name did not match an existing Google Drive Spreadsheet
-				// create a new Google Drive Spreadsheet using the supplied name
+				// the supplied Google Sheet name did not match an existing Google Sheet
+				// create a new Google Sheet using the supplied name
 				// initialize a Google Drive API client
 				require_once 'ease/lib/Google/Client.php';
 				$client = new Google_Client();
@@ -1902,7 +1971,7 @@ class ease_form_handler
 					}
 					$header_row_csv .= "\r\n";
 				}
-				// upload the CSV file and convert it to a Google Drive Spreadsheet
+				// upload the CSV file and convert it to a Google Sheet
 				$new_spreadsheet = null;
 				$try_count = 0;
 				while($new_spreadsheet===null && $try_count<=5) {
@@ -1916,16 +1985,16 @@ class ease_form_handler
 						continue;
 					}
 				}
-				// get the new Google Drive Spreadsheet ID
+				// get the new Google Sheet ID
 				$google_spreadsheet_id = $new_spreadsheet['id'];
-				// check if there was an error creating the Google Drive Spreadsheet
+				// check if there was an error creating the Google Sheet
 				if(!$google_spreadsheet_id) {
-					echo 'Error!  Unable to create Google Drive Spreadsheet named: ' . htmlspecialchars($this->form_info['google_spreadsheet_name']);
+					echo 'Error!  Unable to create Google Sheet named: ' . htmlspecialchars($this->form_info['google_spreadsheet_name']);
 					exit;
 				}
-				// cache the meta data for the new Google Drive Spreadsheet (id, name, column name to letter map, column letter to name map)
+				// cache the meta data for the new Google Sheet (id, name, column name to letter map, column letter to name map)
 				$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($this->form_info['google_spreadsheet_name']);
-				// load the newly created Google Drive Spreadsheet
+				// load the newly created Google Sheet
 				$spreadSheet = null;
 				$try_count = 0;
 				while($spreadSheet===null && $try_count<=5) {
@@ -1938,18 +2007,18 @@ class ease_form_handler
 				$new_spreadsheet_created = true;
 			}
 		}
-		// ensure a Google Drive Spreadsheet was laoded
+		// ensure a Google Sheet was laoded
 		if($spreadSheet===null) {
-			echo 'Error!  Unable to load Google Drive Spreadsheet.';
+			echo 'Error!  Unable to load Google Sheet.';
 			exit;
 		}
-		// load the worksheets in the Google Drive Spreadsheet
+		// load the worksheets in the Google Sheet
 		$worksheetFeed = $spreadSheet->getWorksheets();
 		// use the requested worksheet, or default to the first worksheet
 		if($this->form_info['save_to_sheet']) {
 			$worksheet = $worksheetFeed->getByTitle($this->form_info['save_to_sheet']);
 			if($worksheet===null) {
-				// the supplied worksheet name did not match an existing worksheet in the Google Drive Spreadsheet
+				// the supplied worksheet name did not match an existing worksheet in the Google Sheet
 				// create a new worksheet using the supplied worksheet name
 				$header_row = array();
 				foreach($this->form_info['inputs'] as $value) {
@@ -1982,15 +2051,15 @@ class ease_form_handler
 		}
 		// check for unloaded worksheet
 		if($worksheet===null) {
-			echo "Google Drive Spreadsheet Error!  Unable to load Worksheet.";
+			echo "Google Sheet Error!  Unable to load Worksheet.";
 			exit;
 		}
 		// load the meta data for the sheet
 		if($this->form_info['google_spreadsheet_id']) {
-			// load the Google Drive Spreadsheet by the referenced ID
+			// load the Google Sheet by the referenced ID
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id'], $this->form_info['save_to_sheet']);
 		} elseif($this->form_info['google_spreadsheet_name']) {
-			// load the Google Drive Spreadsheet by the referenced name
+			// load the Google Sheet by the referenced name
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($this->form_info['google_spreadsheet_name'], $this->form_info['save_to_sheet']);
 		}
 		// build the new row to insert into the worksheet
@@ -2007,7 +2076,7 @@ class ease_form_handler
 				} elseif(isset($spreadsheet_meta_data['column_letter_by_name'][$value['header_reference']])) {
 					$row[$value['header_reference']] = $new_value;
 				} else {
-					// the referenced column wasn't found in the cached Google Drive Spreadsheet meta data... dump the cache and reload it, then check again
+					// the referenced column wasn't found in the cached Google Sheet meta data... dump the cache and reload it, then check again
 					$this->core->flush_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id'], $spreadsheet_meta_data['worksheet']);
 					$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id'], $spreadsheet_meta_data['worksheet']);
 					if(isset($spreadsheet_meta_data['column_name_by_letter'][strtoupper($value['header_reference'])])) {
@@ -2041,7 +2110,7 @@ class ease_form_handler
 						}
 						$cellEntry->setCell(1, $new_column_number);
 						$cellEntry->update();
-						// dump the cached meta data for the Google Drive Spreadsheet and reload it, then check again
+						// dump the cached meta data for the Google Sheet and reload it, then check again
 						$this->core->flush_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id'], $spreadsheet_meta_data['worksheet']);
 						$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id'], $spreadsheet_meta_data['worksheet']);
 						if(isset($spreadsheet_meta_data['column_name_by_letter'][strtoupper($value['header_reference'])])) {
@@ -2061,14 +2130,22 @@ class ease_form_handler
 				}
 			}
 			if($new_row_has_nonempty_value) {
-				$row['easerowid'] = $this->core->new_uuid();
+				if(isset($this->form_info['new_row_uuid']) && trim($this->form_info['new_row_uuid'])!='') {
+					// force the UUID to only contain a-z and 0-9 and be at most 32 characters long
+					$row['easerowid'] = preg_replace('/[^a-z0-9]+/is', '', strtolower($this->form_info['new_row_uuid']));
+					if(strlen($row['easerowid'])>32) {
+						$row['easerowid'] = substr($row['easerowid'], 0, 32);
+					}
+				} else {
+					$row['easerowid'] = $this->core->new_uuid();
+				}
 				$listFeed = $worksheet->getListFeed();
 				$listFeed->insert($row);
 			}
 		}
-		// done adding row to Google Drive Spreadsheet... process any Form Actions
-		// duplicate the row keys so there are values for both column letter and column name;
-		// - this is done to simplify local variable injection while processing Form Actions
+		// done adding row to Google Sheet... process any Form Actions
+		// duplicate the row keys so there are values for both column letter and column name...
+		// this is done to simplify local variable injection while processing Form Actions
 		foreach($row as $key=>$value) {
 			$row[$spreadsheet_meta_data['column_letter_by_name'][$key]] = $value;
 		}
@@ -2318,22 +2395,22 @@ class ease_form_handler
 	function update_row_in_googlespreadsheet($action) {
 		// refresh the google access token if necessary
 		$this->core->validate_google_access_token();
-		// initialize a google Google Drive Spreadsheet API client
+		// initialize a google Google Sheet API client
 		require_once 'ease/lib/Spreadsheet/Autoloader.php';
 		$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
 		$serviceRequest = new Google\Spreadsheet\DefaultServiceRequest($request);
 		Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
 		$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
-		// determine if the Google Drive Spreadsheet was referenced by name or ID
+		// determine if the Google Sheet was referenced by name or ID
 		$new_spreadsheet_created = false;
 		if($this->form_info['google_spreadsheet_id']) {
 			$spreadSheet = $spreadsheetService->getSpreadsheetById($this->form_info['google_spreadsheet_id']);
 			if($spreadSheet===null) {
-				// there was an error loading the Google Drive Spreadsheet by ID...
-				// flush the cached meta data for the Google Drive Spreadsheet ID which may no longer be valid
+				// there was an error loading the Google Sheet by ID...
+				// flush the cached meta data for the Google Sheet ID which may no longer be valid
 				$this->core->flush_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id']);
 				$this->form_info['google_spreadsheet_id'] = '';
-				// try adding the row again using the Google Drive Spreadsheet name which will automatically re-create the Google Drive Spreadsheet
+				// try adding the row again using the Google Sheet name which will automatically re-create the Google Sheet
 				$this->update_row_in_googlespreadsheet();
 				exit;
 			}
@@ -2342,8 +2419,8 @@ class ease_form_handler
 			$spreadsheetFeed = $spreadsheetService->getSpreadsheets();
 			$spreadSheet = $spreadsheetFeed->getByTitle($this->form_info['google_spreadsheet_name']);
 			if($spreadSheet===null) {
-				// the supplied Google Drive Spreadsheet name did not match an existing Google Drive Spreadsheet
-				// create a new Google Drive Spreadsheet using the supplied name
+				// the supplied Google Sheet name did not match an existing Google Sheet
+				// create a new Google Sheet using the supplied name
 				// initialize a Google Drive API client
 				require_once 'ease/lib/Google/Client.php';
 				$client = new Google_Client();
@@ -2399,7 +2476,7 @@ class ease_form_handler
 					}
 					$header_row_csv .= "\r\n";
 				}
-				// upload the CSV content and convert it to a Google Drive Spreadsheet
+				// upload the CSV content and convert it to a Google Sheet
 				$new_spreadsheet = null;
 				$try_count = 0;
 				while($new_spreadsheet===null && $try_count<=5) {
@@ -2413,17 +2490,17 @@ class ease_form_handler
 						continue;
 					}
 				}
-				// get the newly created Google Drive Spreadsheet ID
+				// get the newly created Google Sheet ID
 				$google_spreadsheet_id = $new_spreadsheet['id'];
-				// ensure a Google Drive Spreadsheet ID was received
+				// ensure a Google Sheet ID was received
 				if(!$google_spreadsheet_id) {
-					echo 'Error!  Unable to create Google Drive Spreadsheet named: ' . htmlspecialchars($this->form_info['google_spreadsheet_name']);
+					echo 'Error!  Unable to create Google Sheet named: ' . htmlspecialchars($this->form_info['google_spreadsheet_name']);
 					exit;
 				}
-				// cache the meta data for the new Google Drive Spreadsheet
+				// cache the meta data for the new Google Sheet
 				// meta data include: id, name, worksheet name, column name to letter map, column letter to name map
 				$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($this->form_info['google_spreadsheet_name']);
-				// load the newly created Google Drive Spreadsheet
+				// load the newly created Google Sheet
 				$spreadSheet = null;
 				$try_count = 0;
 				while($spreadSheet===null && $try_count<=5) {
@@ -2436,17 +2513,17 @@ class ease_form_handler
 				$new_spreadsheet_created = true;
 			}
 		}
-		// ensure a Google Drive Spreadsheet was laoded
+		// ensure a Google Sheet was laoded
 		if($spreadSheet===null) {
-			echo 'Error!  Unable to load Google Drive Spreadsheet';
+			echo 'Error!  Unable to load Google Sheet';
 			exit;
 		}
-		// load the worksheets in the Google Drive Spreadsheet
+		// load the worksheets in the Google Sheet
 		$worksheetFeed = $spreadSheet->getWorksheets();
 		if($this->form_info['save_to_sheet']) {
 			$worksheet = $worksheetFeed->getByTitle($this->form_info['save_to_sheet']);
 			if($worksheet===null) {
-				// the supplied worksheet name did not match an existing worksheet of the Google Drive Spreadsheet;  create a new worksheet using the supplied name
+				// the supplied worksheet name did not match an existing worksheet of the Google Sheet;  create a new worksheet using the supplied name
 				$header_row = array();
 				foreach($this->form_info['inputs'] as $value) {
 					$header_row[] = $value['original_name'];
@@ -2478,15 +2555,15 @@ class ease_form_handler
 		}
 		// ensure a worksheet has been loaded
 		if($worksheet===null) {
-			echo 'Google Drive Spreadsheet Error!  Unable to load Worksheet.';
+			echo 'Google Sheet Error!  Unable to load Worksheet.';
 			exit;
 		}
 		// load the meta data for the Google Sheet
 		if($this->form_info['google_spreadsheet_id']) {
-			// Google Drive Spreadsheet was referenced by ID
+			// Google Sheet was referenced by ID
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id'], $this->form_info['save_to_sheet']);
 		} elseif($this->form_info['google_spreadsheet_name']) {
-			// Google Drive Spreadsheet was referenced by "Name"
+			// Google Sheet was referenced by "Name"
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($this->form_info['google_spreadsheet_name'], $this->form_info['save_to_sheet']);
 		}
 		// build the updated row to replace into the sheet
@@ -2503,7 +2580,7 @@ class ease_form_handler
 				} elseif(isset($spreadsheet_meta_data['column_letter_by_name'][$value['header_reference']])) {
 					$row[$value['header_reference']] = $new_value;
 				} else {
-					// the referenced column wasn't found in the cached Google Drive Spreadsheet meta data... dump the cache and reload it, then check again
+					// the referenced column wasn't found in the cached Google Sheet meta data... dump the cache and reload it, then check again
 					$this->core->flush_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id'], $spreadsheet_meta_data['worksheet']);
 					$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id'], $spreadsheet_meta_data['worksheet']);
 					if(isset($spreadsheet_meta_data['column_name_by_letter'][strtoupper($value['header_reference'])])) {
@@ -2537,7 +2614,7 @@ class ease_form_handler
 						}
 						$cellEntry->setCell(1, $new_column_number);
 						$cellEntry->update();
-						// dump the cached meta data for the Google Drive Spreadsheet and reload it, then check again
+						// dump the cached meta data for the Google Sheet and reload it, then check again
 						$this->core->flush_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id'], $spreadsheet_meta_data['worksheet']);
 						$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($spreadsheet_meta_data['id'], $spreadsheet_meta_data['worksheet']);
 						if(isset($spreadsheet_meta_data['column_name_by_letter'][strtoupper($value['header_reference'])])) {
@@ -2548,31 +2625,37 @@ class ease_form_handler
 					}
 				}
 			}
-			// update the row
-			if(!$cellEntry) {
-				// a cell wasn't loaded yet... load one so it can be updated for each updated row value
-				$cellFeed = $worksheet->getCellFeed();
-				$cellEntries = $cellFeed->getEntries();
-				$cellEntry = $cellEntries[0];
-			}
-			$alphas = array();
-			for($i='A'; $i<'ZZ'; $i++) {
-				$alphas[] = $i;
-			}
+			// new values found... update the Google Sheet Row
 			foreach($row as $key=>$value) {
-				if(isset($spreadsheet_meta_data['column_letter_by_name'][$key])) {
-					$column_letter = $spreadsheet_meta_data['column_letter_by_name'][$key];
-					$column_number = array_search(strtoupper($column_letter), $alphas) + 1;
-					$cellEntry->setCell($this->form_info['row_number'], $column_number);
-					$cellEntry->setContent($value);
-					$cellEntry->update();
+				$key = preg_replace('/(^[0-9]+|[^a-z0-9]+)/s', '', strtolower($key));
+				if(isset($spreadsheet_meta_data['column_name_by_letter'][strtoupper($key)])) {
+					// the column was referenced by column letter... change it to reference the column header name
+					unset($row[$key]);
+					$row[$spreadsheet_meta_data['column_name_by_letter'][strtoupper($key)]] = $value;
+				} elseif(isset($spreadsheet_meta_data['column_letter_by_name'][$key])) {
+					// the column was referenced by an existing column header name
 				} else {
-					// the column header reference didn't match any existing columns
+					// the referenced column wasn't found in the cached Google Sheet meta data...
+					//	dump the cache and reload it, then check again... if it still isn't found, create it
+					// TODO!! consolidate all the code that does this into a core function
 				}
 			}
+			// query for the row to update
+			$listFeed = $worksheet->getListFeed('', '', "easerowid = \"{$this->form_info['row_uuid']}\"");
+			$listEntries = $listFeed->getEntries();
+			// update all rows that matched the requested EASE Row ID value
+			// TODO!! if a matching record wasn't found, treat this as a create record command instead
+			foreach($listEntries as $listEntry) {
+				$current_row = $listEntry->getValues();
+				foreach($current_row as $key=>$value) {
+					if(!isset($row[$key])) {
+						$row[$key] = $value;
+					}
+				}
+				$listEntry->update($row);
+			}
 		}
-		// done updating row in Google Drive Spreadsheet... process any Form Actions
-		
+		// done updating row in Google Sheet... process any Form Actions		
 		// insert a key value in the new row for each column value by letter instead of header name
 		foreach($row as $key=>$value) {
 			$row[$spreadsheet_meta_data['column_letter_by_name'][$key]] = $value;
@@ -2819,20 +2902,20 @@ class ease_form_handler
 	function delete_row_from_googlespreadsheet($action) {
 		// refresh the google access token if necessary
 		$this->core->validate_google_access_token();
-		// initialize a google Google Drive Spreadsheet API client
+		// initialize a google Google Sheet API client
 		require_once 'ease/lib/Spreadsheet/Autoloader.php';
 		$request = new Google\Spreadsheet\Request($this->core->config['gapp_access_token']);
 		$serviceRequest = new Google\Spreadsheet\DefaultServiceRequest($request);
 		Google\Spreadsheet\ServiceRequestFactory::setInstance($serviceRequest);
 		$spreadsheetService = new Google\Spreadsheet\SpreadsheetService($request);
-		// determine if the Google Drive Spreadsheet was referenced by name or ID
+		// determine if the Google Sheet was referenced by name or ID
 		if($this->form_info['google_spreadsheet_id']) {
 			$spreadSheet = $spreadsheetService->getSpreadsheetById($this->form_info['google_spreadsheet_id']);
 			if($spreadSheet===null) {
-				// there was an error loading the Google Drive Spreadsheet by ID...
-				// flush the cached meta data for the Google Drive Spreadsheet ID which may no longer be valid
+				// there was an error loading the Google Sheet by ID...
+				// flush the cached meta data for the Google Sheet ID which may no longer be valid
 				$this->core->flush_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id']);
-				// try deleting the row again after blanking out the ID, so the Google Drive Spreadsheet "Name" will be used if set
+				// try deleting the row again after blanking out the ID, so the Google Sheet "Name" will be used if set
 				$this->form_info['google_spreadsheet_id'] = '';
 				$this->delete_row_from_googlespreadsheet();
 				exit;
@@ -2842,16 +2925,16 @@ class ease_form_handler
 			$spreadsheetFeed = $spreadsheetService->getSpreadsheets();
 			$spreadSheet = $spreadsheetFeed->getByTitle($this->form_info['google_spreadsheet_name']);
 			if($spreadSheet===null) {
-				echo 'Error!  Unable to load Google Drive Spreadsheet named: ' . htmlspecialchars($this->form_info['google_spreadsheet_name']);
+				echo 'Error!  Unable to load Google Sheet named: ' . htmlspecialchars($this->form_info['google_spreadsheet_name']);
 				exit;
 			}
 		}
-		// ensure a Google Drive Spreadsheet was laoded
+		// ensure a Google Sheet was laoded
 		if($spreadSheet===null) {
-			echo 'Error!  Unable to load Google Drive Spreadsheet';
+			echo 'Error!  Unable to load Google Sheet';
 			exit;
 		}
-		// load the worksheets in the Google Drive Spreadsheet
+		// load the worksheets in the Google Sheet
 		$worksheetFeed = $spreadSheet->getWorksheets();
 		if($this->form_info['save_to_sheet']) {
 			$worksheet = $worksheetFeed->getByTitle($this->form_info['save_to_sheet']);
@@ -2869,38 +2952,20 @@ class ease_form_handler
 		}
 		// load the meta data for the sheet
 		if($this->form_info['google_spreadsheet_id']) {
-			// Google Drive Spreadsheet was referenced by ID
+			// Google Sheet was referenced by ID
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_id($this->form_info['google_spreadsheet_id'], $this->form_info['save_to_sheet']);
 		} elseif($this->form_info['google_spreadsheet_name']) {
-			// Google Drive Spreadsheet was referenced by "Name"
+			// Google Sheet was referenced by "Name"
 			$spreadsheet_meta_data = $this->core->load_meta_data_for_google_spreadsheet_by_name($this->form_info['google_spreadsheet_name'], $this->form_info['save_to_sheet']);
 		}
-		// initialize column letter by number array
-		$alphas = array();
-		for($i='A'; $i<'ZZ'; $i++) {
-			$alphas[] = $i;
+		// query for the row to delete
+		$listFeed = $worksheet->getListFeed('', '', "easerowid = \"{$this->form_info['row_uuid']}\"");
+		$listEntries = $listFeed->getEntries();
+		// delete all rows that matched the requested EASE Row ID value
+		foreach($listEntries as $listEntry) {
+			$listEntry->delete();
 		}
-		// delete the row... load a cell so it can be updated for each column to blank it out
-		$cellFeed = $worksheet->getCellFeed();
-		$cellEntries = $cellFeed->getEntries();
-		// build array of row number by EASE Row ID
-		$row_number_by_ease_row_id = array();
-		foreach($cellEntries as $cellEntry) {
-			$cell_title = $cellEntry->getTitle();
-			if(preg_match('/([A-Z]+)([0-9]+)/is', $cell_title, $cell_matches)) {
-				if($cell_matches[1]==$spreadsheet_meta_data['column_letter_by_name']['easerowid']) {
-					$row_number_by_ease_row_id[$cellEntry->getContent()] = $cell_matches[2];
-				}
-			}
-		}
-		// update each cell in the referenced row
-		foreach($spreadsheet_meta_data['column_letter_by_name'] as $key) {
-			$column_number = array_search(strtoupper($key), $alphas) + 1;
-			$cellEntry->setContent('');
-			$cellEntry->setCell($this->form_info['row_number'], $column_number);
-			$cellEntry->update();
-		}
-		// done deleting row from Google Drive Spreadsheet... process any Form Actions		
+		// done deleting row from Google Sheet... process any Form Actions		
 		// execute any set cookie or session variable commands for the form action
 		@$this->form_info['set_to_list_by_action'][$action] = array_merge(
 			(array)$this->form_info['set_to_list_by_action'][$action],
@@ -3505,7 +3570,7 @@ class ease_form_handler
 					if(strtolower($key)=='id' || strtolower($key)=='uuid' || strtolower($key)=='easerowid') {
 						$value = $id;
 					} else {
-						// Cloud SQL, Google Drive Spreadsheets, and memcached have different allowed character sets for bucket.key names...
+						// Cloud SQL, Google Sheets, and memcached have different allowed character sets for bucket.key names...
 						// allow any of the formats to determine the value to inject
 						if(isset($form[$key])) {
 							$value = $form[$key];
@@ -3522,7 +3587,7 @@ class ease_form_handler
 						}
 					}
 				} elseif($bucket=='' || $bucket==$this->form_info['sql_table_name'] || $bucket=='row') {
-					// Cloud SQL, Google Drive Spreadsheets, and memcached have different allowed character sets for bucket.key names...
+					// Cloud SQL, Google Sheets, and memcached have different allowed character sets for bucket.key names...
 					// allow any of the formats to determine the value to inject
 					if(isset($existing[$key])) {
 						$value = $existing[$key];

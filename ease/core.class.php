@@ -35,12 +35,14 @@ class ease_core
 	public $global_reference_start = '[';
 	public $global_reference_end = ']';
 	public $service_endpoints = array('form'=>'/ease/form', 'google_oauth2callback'=>'/oauth2callback', 'logout'=>'/logout');
-	public $reserved_buckets = array('system', 'session', 'cookie', 'url', 'uri', 'cache', 'config', 'request', 'post', 'form');
+	public $reserved_buckets = array('system', 'session', 'cookie', 'url', 'uri', 'cache', 'config', 'request', 'post', 'form', 'ease_forms');
 	public $reserved_sql_tables = array('ease_config', 'ease_google_spreadsheets', 'ease_forms');
 	public $reserved_sql_columns = array('instance_id', 'id', 'uuid', 'created_on', 'updated_on');
 	public $namespace = '';
 	public $google_spreadsheets = array();
 	public $google_spreadsheets_by_name = array();
+	public $catch_cookies = false;
+	public $cookies = null;
 	public $catch_redirect = false;
 	public $redirect = null;
 	public $db_disabled = false;
@@ -282,12 +284,10 @@ class ease_core
 				$espx_filepath = $this->application_root . DIRECTORY_SEPARATOR . $requested_page_path . '.espx';
 				$this->globals['system.page'] = ltrim($_REQUEST['page'], '/');
 				$this->globals['system.page'] = preg_replace('@/index$@is', '/', $this->globals['system.page']);
-			} else {
-				// the requested path did not point to an existing ESPX file... this will trigger a HTTP 404 Not Found error
 			}
 			// if the $espx_file variable is set, the request translated to an existing ESPX file;  process that ESPX file
 			if(isset($espx_filepath) && trim($espx_filepath)!='') {
-				// get path information about the requested ESPX file
+				// ESPX file flagged for processing... get path information about the file
 				$espx_filepath_parts = pathinfo($espx_filepath);
 				$this->request_espx_path = $espx_filepath;
 				$this->request_espx_path_dir = $espx_filepath_parts['dirname'];
@@ -301,7 +301,7 @@ class ease_core
 				set_include_path(get_include_path() . PATH_SEPARATOR . $this->application_root . $espx_filepath_parts['dirname']);
 				// load the EASE body of the ESPX file
 				$espx_body = file_get_contents($espx_filepath);
-				// apply any header or footer content to the EASE body, unless the no_header or no_footer flags were set
+				// apply any header or footer content to the EASE body
 				$header_filepath = $espx_filepath_parts['dirname'] . DIRECTORY_SEPARATOR . 'header.espx';
 				$footer_filepath = $espx_filepath_parts['dirname'] . DIRECTORY_SEPARATOR . 'footer.espx';
 				if(file_exists($header_filepath)) {
@@ -310,10 +310,10 @@ class ease_core
 				if(file_exists($footer_filepath)) {
 					$espx_body .= file_get_contents($footer_filepath);
 				}
-				// parse and process the EASE body
+				// process the ESPX body as EASE
 				$this->process_ease($espx_body);
 			} else {
-				// the requested page does not exist
+				// the request did not translate to an existing ESPX file
 				header('HTTP/1.1 404 Not Found');
 				echo "<html><head><title>EASE File Not Found</title></head><body style='background-color:#DDDDDD;'>\n";
 				echo "<div style='width:100%; margin:auto; margin-top:120px; font-style:italic; font-size:297px; text-align:center; color:#CFCFCF; margin-bottom:0px; padding-bottom:0px; line-height:360px; padding:0px;'>EASE</div>\n";
@@ -1093,38 +1093,38 @@ class ease_core
 	function set_global_system_vars() {
 		$this->globals['system.core'] = 'PHP';
 		$this->globals['system.session_id'] = session_id();
-		$this->globals['system.domain'] = $_SERVER['SERVER_NAME'];
-		$this->globals['system.name'] = &$this->globals['system.domain'];
-		$this->globals['system.host'] = $_SERVER['HTTP_HOST'];
+		$this->globals['system.domain'] = &$_SERVER['SERVER_NAME'];
+		$this->globals['system.host'] = &$_SERVER['HTTP_HOST'];
 		$this->globals['system.http_host'] = 'http' . ((isset($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS'])=='on') ? 's' : '') . '://' . $_SERVER['HTTP_HOST'];
-		$this->globals['system.host_url'] = &$this->globals['system.http_host'];
 		$this->globals['system.https_host'] = 'http' . (($_SERVER['SERVER_NAME']!='localhost') ? 's' : '') . '://' . $_SERVER['HTTP_HOST'];
-		$this->globals['system.secure_host_url'] = &$this->globals['system.https_host'];
+		$this->globals['system.request'] = &$_SERVER['REQUEST_URI'];
+		// set referring page variables
 		if(isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER']!='') {
-			$this->globals['system.referrer'] = $_SERVER['HTTP_REFERER'];
-			$referrer_parts = parse_url($this->globals['system.referrer']);
-			$this->globals['system.referring_host'] = $referrer_parts['host'] . ((isset($referrer_parts['port']) && $referrer_parts['port']!='') ? ':' . $referrer_parts['port'] : '');
+			$referrer_parts = parse_url($_SERVER['HTTP_REFERER']);
+			$this->globals['system.referrer'] = &$_SERVER['HTTP_REFERER'];
 			$this->globals['system.referring_scheme'] = strtolower($referrer_parts['scheme']);
+			$this->globals['system.referring_host'] = $referrer_parts['host'] . ((isset($referrer_parts['port']) && $referrer_parts['port']!='') ? ':' . $referrer_parts['port'] : '');
 			$this->globals['system.referring_host_url'] = $referrer_parts['scheme'] . '://' . $this->globals['system.referring_host'];
+			$this->globals['system.referring_page_url'] = $referrer_parts['scheme'] . '://' . $this->globals['system.referring_host'] . $referrer_parts['path'];
 			$this->globals['system.https_referring_host'] = 'http' . (($referrer_parts['host']!='localhost') ? 's' : '') . '://' . $this->globals['system.referring_host'];
-			$this->globals['system.secure_referring_host_url'] = &$this->globals['system.https_referring_host'];
+			$this->globals['system.https_referring_page'] = 'http' . (($referrer_parts['host']!='localhost') ? 's' : '') . '://' . $this->globals['system.referring_host'] . $referrer_parts['path'];
 		} else {
 			$this->globals['system.referrer'] = '';
-			$this->globals['system.referring_host'] = '';
 			$this->globals['system.referring_scheme'] = '';
+			$this->globals['system.referring_host'] = '';
 			$this->globals['system.referring_host_url'] = '';
+			$this->globals['system.referring_page_url'] = '';
 			$this->globals['system.https_referring_host'] = '';
-			$this->globals['system.secure_referring_host_url'] = '';
+			$this->globals['system.https_referring_page'] = '';
 		}
+		// set current time variables
 		$this->globals['system.timestamp'] = $_SERVER['REQUEST_TIME'];
 		if(isset($_SERVER['REQUEST_TIME_FLOAT'])) {
 			$this->globals['system.timestamp_float'] = $_SERVER['REQUEST_TIME_FLOAT'];
-			$this->globals['system.timestamp_long'] = &$this->globals['system.timestamp_float'];
-			$this->globals['system.microtime'] = &$this->globals['system.timestamp_float'];
 		} else {
+			// a floating point version of the current timestamp was not available
+			// alias the integer timestamp as the float value
 			$this->globals['system.timestamp_float'] = &$this->globals['system.timestamp'];
-			$this->globals['system.timestamp_long'] = &$this->globals['system.timestamp_float'];
-			$this->globals['system.microtime'] = &$this->globals['system.timestamp_float'];
 		}
 		$this->globals['system.time'] = date('g:i:s A T', $_SERVER['REQUEST_TIME']);
 		$this->globals['system.time_short'] = date('H:i:s', $_SERVER['REQUEST_TIME']);
@@ -1135,11 +1135,21 @@ class ease_core
 		$this->globals['system.month'] = date('m', $_SERVER['REQUEST_TIME']);
 		$this->globals['system.month_name'] = date('F', $_SERVER['REQUEST_TIME']);
 		$this->globals['system.month_name_short'] = date('M', $_SERVER['REQUEST_TIME']);
-		$this->globals['system.month_short'] = &$this->globals['system.month_name_short'];
 		$this->globals['system.day_name'] = date('l', $_SERVER['REQUEST_TIME']);
 		$this->globals['system.day_name_short'] = date('D', $_SERVER['REQUEST_TIME']);
-		$this->globals['system.day_short'] = &$this->globals['system.day_name_short'];
 		$this->globals['system.year'] = date('Y', $_SERVER['REQUEST_TIME']);
+		// set aliases for legacy support
+		$this->globals['system.name'] = &$this->globals['system.domain'];
+		$this->globals['system.host_url'] = &$this->globals['system.http_host'];
+		$this->globals['system.secure_host_url'] = &$this->globals['system.https_host'];
+		$this->globals['system.day_short'] = &$this->globals['system.day_name_short'];
+		$this->globals['system.month_short'] = &$this->globals['system.month_name_short'];
+		$this->globals['system.timestamp_long'] = &$this->globals['system.timestamp_float'];
+		$this->globals['system.microtime'] = &$this->globals['system.timestamp_float'];
+		$this->globals['system.http_referring_host'] = &$this->globals['system.referring_host_url'];
+		$this->globals['system.http_referring_page'] = &$this->globals['system.referring_page_url'];
+		$this->globals['system.secure_referring_host_url'] = &$this->globals['system.https_referring_host'];
+		$this->globals['system.secure_referring_page_url'] = &$this->globals['system.https_referring_page'];
 	}
 
 	function file_get_contents_utf8($filepath) {

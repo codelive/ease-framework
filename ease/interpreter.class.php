@@ -229,14 +229,14 @@ class ease_interpreter
 							$column_letter = strtoupper(rtrim($ease_variable_parts[1]));
 							if(in_array($column_letter, $column_letter_by_name)) {
 								if(isset($cell_value_by_column_letter[$column_letter])) {
-									$value = nl2br(htmlspecialchars($cell_value_by_column_letter[$column_letter]));
+									$value = $cell_value_by_column_letter[$column_letter];
 								} else {
 									$value = '';
 								}
 							} else {
 								$column_name = preg_replace('/(^[0-9]+|[^a-z0-9]+)/s', '', strtolower(ltrim($ease_variable_parts[1])));
 								if(isset($cell_value_by_column_letter[$column_letter_by_name[$column_name]])) {
-									$value = nl2br(htmlspecialchars($cell_value_by_column_letter[$column_letter_by_name[$column_name]]));
+									$value = $cell_value_by_column_letter[$column_letter_by_name[$column_name]];
 								} else {
 									$value = '';
 								}
@@ -246,14 +246,14 @@ class ease_interpreter
 						$column_letter = strtoupper($matches[1]);
 						if(in_array($column_letter, $column_letter_by_name)) {
 							if(isset($cell_value_by_column_letter[$column_letter])) {
-								$value = nl2br(htmlspecialchars($cell_value_by_column_letter[$column_letter]));
+								$value = $cell_value_by_column_letter[$column_letter];
 							} else {
 								$value = '';
 							}
 						} else {
 							$column_name = preg_replace('/(^[0-9]+|[^a-z0-9]+)/s', '', strtolower($matches[1]));
 							if(isset($cell_value_by_column_letter[$column_letter_by_name[$column_name]])) {
-								$value = nl2br(htmlspecialchars($cell_value_by_column_letter[$column_letter_by_name[$column_name]]));
+								$value = $cell_value_by_column_letter[$column_letter_by_name[$column_name]];
 							} else {
 								$value = '';
 							}
@@ -283,14 +283,14 @@ class ease_interpreter
 					if(in_array($column, $column_letter_by_name)) {
 						$row = preg_replace('/[^0-9]+/', '', ltrim($ease_variable_parts[1]));
 						if(isset($cells_by_row_by_column_letter[$row][$column])) {
-							$value = nl2br(htmlspecialchars($cells_by_row_by_column_letter[$row][$column]));
+							$value = $cells_by_row_by_column_letter[$row][$column];
 						}
 					}
 				} else {
 					$column = preg_replace('/[^A-Z]+/', '', strtoupper($matches[1]));
 					if(in_array($column, $column_letter_by_name)) {
 						if(isset($cells_by_row_by_column_letter[1][$column])) {
-							$value = nl2br(htmlspecialchars($cells_by_row_by_column_letter[1][$column]));
+							$value = $cells_by_row_by_column_letter[1][$column];
 						}
 					}
 				}

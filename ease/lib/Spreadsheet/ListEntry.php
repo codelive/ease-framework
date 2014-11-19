@@ -95,7 +95,11 @@ class ListEntry
      */
     public function delete()
     {
-        ServiceRequestFactory::getInstance()->delete($this->getEditUrl());
+		$serviceRequest = ServiceRequestFactory::getInstance();
+		$serviceRequest->getRequest()->setMethod(Request::DELETE);
+		$serviceRequest->getRequest()->setHeaders(array('Content-Type'=>'application/atom+xml'));
+		$serviceRequest->getRequest()->setFullUrl($this->getEditUrl());
+		$serviceRequest->execute();
     }
 
 	/**

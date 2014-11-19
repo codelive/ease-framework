@@ -3,7 +3,7 @@
      * Plugin Name: EASE Framework
      * Plugin URI: http://www.cloudward.com
      * Description: A plugin that makes it easy to generate forms and lists using EASE syntax and Google Spreadsheets
-     * Version: 0.1.5
+     * Version: 0.1.6
      * Author: Cloudward
      * Author URI: http://www.cloudward.com
      * License: GPLv2 or later
@@ -106,7 +106,7 @@
      * 
      * @author  Lucas Simmons 
      *
-     * @since 0.1
+     * @since 0.1.0
      *
     */
     function ease_page_menu_args( $args ) {
@@ -135,11 +135,11 @@
      * 
      * @author  Lucas Simmons 
      *
-     * @since 0.1
+     * @since 0.1.0
      *
     */
     function ease_admin_load_js_scripts(){
-        wp_enqueue_script('ease_my_script', plugins_url( 'script_helper.js' , __FILE__ ),array(),"0.1.5.821398");
+        wp_enqueue_script('ease_my_script', plugins_url( 'script_helper.js' , __FILE__ ),array(),"0.1.6.805336");
         wp_enqueue_script('ease_my_script1', plugin_dir_url( __FILE__ ) . "static/js/tabslet/jquery.tabslet-custom.js","","",true);
         wp_enqueue_script('ease_my_script2', plugin_dir_url( __FILE__ ) . "static/js/jquery-validation/validation-1.13.0/dist/jquery.validate.js","","",true);
     }
@@ -149,7 +149,7 @@
      * 
      * @author  Lucas Simmons 
      *
-     * @since 0.1
+     * @since 0.1.0
      *
     */
     function ease_form_process(){ 
@@ -181,7 +181,7 @@
      *
      * @author  Lucas Simmons 
      *
-     * @since 0.1
+     * @since 0.1.0
      *
     */
      function ease_disable_html_editor_wps() {
@@ -297,7 +297,7 @@
      *
      * @author  Lucas Simmons 
      *
-     * @since 0.1
+     * @since 0.1.0
      *
      * @param string    $content  The content you want to run through the EASE parser
     */
@@ -345,7 +345,6 @@
         //$content = preg_replace('/bodypage\s*=\s*"(.*?)"\s*;/is', "$1" . get_permalink($link_id), $content); 
         $replace_urls = get_option( "ease_replace_urls");
         
-        
         // Replaces the urls with the wordpress permalink url
         if($replace_urls){
             foreach($replace_urls as $index => $link_id){
@@ -353,8 +352,10 @@
                     $content = preg_replace('/(\/\?page=((' . $index . ')))(?=\s*#>)/', get_permalink($link_id), $content);
                     
                     // Replace any urls that have a start of a quote and end of a quote or ? or & and are formatted like /?page=page_name with the permalink url
-                    $content = preg_replace('/(\'|")+(\/\?page=((' . $index . ')))(?=\?|&|"|\')/', "$1" . get_permalink($link_id), $content);
-                 
+                    if(strpos(get_permalink($link_id),"?") === false){
+                       $content = preg_replace('/(\'|")+(\/\?page=((' . $index . ')))(?=\?|&|"|\')/', "$1" . get_permalink($link_id), $content);
+                    }
+                    
                     // Searches for any permalinks that have the syntax /& when they should be /?
                     if(get_permalink($link_id) !== false){
                         $content = preg_replace('/(' . preg_quote(get_permalink($link_id),'/') . '&)+/', get_permalink($link_id) . '?', $content);
@@ -368,7 +369,9 @@
         }
         
         // Any extra /?page= should be replaced with the site url as the base
-        $content = preg_replace('/((?:\'|")+\/\?page=)+/', site_url() . '?page=', $content);  
+        if(strpos(get_permalink($link_id),"?") === false){
+            $content = preg_replace('/((?:\'|")+\/\?page=)+/', site_url() . '?page=', $content);
+        }
         return $content;
     }
     
@@ -378,7 +381,7 @@
      *
      * @author  Lucas Simmons 
      *
-     * @since 0.1
+     * @since 0.1.0
      *
      * @param string    $text The footer text
      *
@@ -395,7 +398,7 @@
      *
      * @author Lucas Simmons
      *
-     * @since 0.1
+     * @since 0.1.0
      */
     function ease_plugin_settings(){
         $endpoint_page_id = get_option('ease_service_endpoint_page');
@@ -505,7 +508,7 @@
             </style>
             <h2><div align="center">Cloudward EASE Framework Settings</div></h2>
             <span>
-                <a onclick="loadWelcomeWindow();" title="" id="welcome-modal-link" name="welcome-modal-link" class="thickbox">View EASE Framework Welcome Page for getting started hints</a>
+                <a onclick="loadWelcomeWindow();return false;" href="#" title="" id="welcome-modal-link" name="welcome-modal-link" class="thickbox">View EASE Framework Welcome Page for getting started hints</a>
             </span>
             <form method="post" action="options.php">
             <?php settings_fields( 'easeoption-group1' );
@@ -539,14 +542,14 @@
                     $notify_items_string .= "<BR>";
                 }
                 
-               // $notify_items_string .= '<B>&nbsp;&nbsp;&nbsp;You have not created an EASE page</B>';               
+                  $notify_items_string .= '<B>&nbsp;&nbsp;&nbsp;You have not created an EASE Helper Script page</B>';               
             }
             
             if($notify_items_string){
                 echo "<BR><B><div class='wp-well'>Notifications:</B><BR>" . $notify_items_string . "</div><BR>";
             }
             
-            echo "<div class='wp-well'><B>EASE Helper Scripts:</B><BR><a onclick='loadScriptHelper(this.value)'>&nbsp;&nbsp;&nbsp;Create EASE Page and Collections or see EASE Code examples</a>:<BR>&nbsp;&nbsp;&nbsp;Pages include: Members website, contacts, surveys, store and more</div> <BR>";
+            echo "<div class='wp-well'><B>EASE Helper Scripts:</B><BR><a onclick='loadScriptHelper(this.value);return false;' href='#'>&nbsp;&nbsp;&nbsp;Create EASE Page and Collections or see EASE Code examples</a>:<BR>&nbsp;&nbsp;&nbsp;Pages include: Members website, contacts, surveys, store and more</div> <BR>";
             $ease_page_array = get_option('ease_replace_urls');
             
 
@@ -578,7 +581,7 @@
                 
                 ?>
             <div class="sitesection">
-                            <p class="expand-one"><h3 style="margin:0px"><input type="checkbox" id="ease_google_drive_active" name="ease_google_drive_active" <?php echo $drive_active; ?>><a onclick="loadEASESettingsWindow('google-settings-modal','Google Drive Settings');return false;">&nbsp;&nbsp;&nbsp;Enable Google Drive Access - </a><a onclick="loadEASESettingsWindow('google-settings-modal','Google Drive Settings');return false;" class="button" style="vertical-align:middle">Setup</a></h3>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(To activate connectivity to Google Drive, Sheets and Docs)</p>
+                            <p class="expand-one"><h3 style="margin:0px"><input type="checkbox" id="ease_google_drive_active" name="ease_google_drive_active" <?php echo $drive_active; ?>><a onclick="loadEASESettingsWindow('google-settings-modal','Google Drive Settings');return false;" href="#">&nbsp;&nbsp;&nbsp;Enable Google Drive Access - </a><a onclick="loadEASESettingsWindow('google-settings-modal','Google Drive Settings');return false;" class="button" style="vertical-align:middle">Setup</a></h3>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(To activate connectivity to Google Drive, Sheets and Docs)</p>
             </div>
             <?php
             
@@ -590,7 +593,7 @@
                 ?>
             <h3>File Upload/Download Options (pick one)</h3>
             <div class="siteawssection">
-                            <p class="expand-one"><h3 style="margin:0px"><input type="checkbox" onclick="easeUploadSelectCheck('amazon');" id="ease_s3_active" name="ease_s3_active" <?php echo $s3_upload_active; ?>><a onclick="loadEASESettingsWindow('amazon-settings-modal','Amazon Settings');return false;">&nbsp;&nbsp;&nbsp;Enable upload/downloads to Amazon S3</a> - <a onclick="loadEASESettingsWindow('amazon-settings-modal','Amazon Settings');return false;" class="button" style="vertical-align:middle">Setup</a></h3>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Activate Upload/Downloads to Amazon S3 rather than your hosting site's folder)</p>
+                            <p class="expand-one"><h3 style="margin:0px"><input type="checkbox" onclick="easeUploadSelectCheck('amazon');" id="ease_s3_active" name="ease_s3_active" <?php echo $s3_upload_active; ?>><a onclick="loadEASESettingsWindow('amazon-settings-modal','Amazon Settings');return false;" href="#">&nbsp;&nbsp;&nbsp;Enable upload/downloads to Amazon S3</a> - <a onclick="loadEASESettingsWindow('amazon-settings-modal','Amazon Settings');return false;" class="button" style="vertical-align:middle">Setup</a></h3>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Activate Upload/Downloads to Amazon S3 rather than your hosting site's folder)</p>
 
             </div>
             <div class="siteuploadsection">
@@ -630,7 +633,7 @@
                     $local_upload = "checked=checked";
                 }
                 ?>
-                            <p class="expand-one"><h3 style="margin:0px"><input type="checkbox" onclick="easeUploadSelectCheck('local');" id="ease_local_upload_active" name="ease_local_upload_active" <?php echo $local_upload; ?>><a onclick="loadEASESettingsWindow('upload-settings-modal','Upload Settings');return false;">&nbsp;&nbsp;&nbsp;Enable upload/downloads to your hosted sites folder</a> - <a onclick="loadEASESettingsWindow('upload-settings-modal','Upload Settings');return false;" class="button" style="vertical-align:middle">Setup</a></h3>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Activate uploads/downloads to your hosted sites folder)</p>
+                            <p class="expand-one"><h3 style="margin:0px"><input type="checkbox" onclick="easeUploadSelectCheck('local');" id="ease_local_upload_active" name="ease_local_upload_active" <?php echo $local_upload; ?>><a onclick="loadEASESettingsWindow('upload-settings-modal','Upload Settings');return false;" href="#">&nbsp;&nbsp;&nbsp;Enable upload/downloads to your hosted sites folder</a> - <a onclick="loadEASESettingsWindow('upload-settings-modal','Upload Settings');return false;" class="button" style="vertical-align:middle">Setup</a></h3>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Activate uploads/downloads to your hosted sites folder)</p>
              </div>
             <?php submit_button(); ?>
             </form>
@@ -644,7 +647,7 @@
      *
      *  @author Lucas Simmons
      *
-     *  @since 0.1
+     *  @since 0.1.0
      *  
      */   
     function ease_landing_page(){
@@ -765,7 +768,7 @@
      *
      *  @author Lucas Simmons
      *
-     *  @since 0.1
+     *  @since 0.1.0
      *  
      */   
     function register_ease_setting() {
@@ -796,7 +799,7 @@
      *
      *  @author Lucas Simmons
      *
-     *  @since 0.1
+     *  @since 0.1.0
      *  
      */   
     function ease_plugin_menu(){
@@ -810,7 +813,7 @@
      * 
      * @author  Lucas Simmons 
      *
-     * @since 0.3
+     * @since 0.1.0
      *
      * @param string    $post_type  
      * @param string    $post  
@@ -826,6 +829,15 @@
         );
     }
     
+    /**
+     * Adds box at the bottom of the page for saving the EASE page name
+     * 
+     * @author  Lucas Simmons 
+     *
+     * @since 0.1.4
+     *
+     * @param string    $post_type  
+    */
     function render_ease_meta_box($post){
        $page_name = array_search($post->ID,get_option('ease_replace_urls'));
        
@@ -845,11 +857,6 @@
        }
     }
 
-    /**
-     * When the post is saved, saves our custom data.
-     *
-     * @param int $post_id The ID of the post being saved.
-     */
     /**
      * When the post is saved, saves our custom data.
      *
@@ -906,6 +913,11 @@
             $replace_urls = get_option( "ease_replace_urls");
             $page_name = array_search($post_id,get_option('ease_replace_urls'));
             
+            $result = array_keys($replace_urls,$post_id);
+             foreach($result as $key=>$value){
+                 unset($replace_urls[$value]);
+             }
+                
             if($page_name && $post_id){
                 unset($replace_urls[$page_name]);
                 unset($replace_urls[$page_name . ".espx"]);
@@ -919,6 +931,14 @@
             //update_post_meta( $post_id, '_my_meta_value_key', $my_data );
     }
     
+    /**
+     * Saves the values for different services from the settings modal 
+     * 
+     * @author  Lucas Simmons 
+     *
+     * @since 0.1.5
+     * 
+    */
     function save_ease_settings_modal_values(){
         update_option('ease_gapp_client_id',$_POST['ease_gapp_client_id']);
         update_option('ease_gapp_client_secret',$_POST['ease_gapp_client_secret']);
@@ -934,7 +954,14 @@
         update_option('ease_s3_secret_access_key',$_POST['ease_s3_secret_access_key']);
     }
     
-    
+    /**
+     * Includes the modals for settings in the plugin
+     * 
+     * @author  Lucas Simmons 
+     *
+     * @since 0.1.5
+     * 
+    */
     function ease_drive_settings_modal_div(){
         include_once plugin_dir_path( __FILE__ ) . 'settings_modals.php';
     }
