@@ -139,7 +139,7 @@
      *
     */
     function ease_admin_load_js_scripts(){
-        wp_enqueue_script('ease_my_script', plugins_url( 'script_helper.js' , __FILE__ ),array(),"0.1.6.805336");
+        wp_enqueue_script('ease_my_script', plugins_url( 'script_helper.js' , __FILE__ ),array(),"0.1.6.525054");
         wp_enqueue_script('ease_my_script1', plugin_dir_url( __FILE__ ) . "static/js/tabslet/jquery.tabslet-custom.js","","",true);
         wp_enqueue_script('ease_my_script2', plugin_dir_url( __FILE__ ) . "static/js/jquery-validation/validation-1.13.0/dist/jquery.validate.js","","",true);
     }
@@ -508,7 +508,7 @@
             </style>
             <h2><div align="center">Cloudward EASE Framework Settings</div></h2>
             <span>
-                <a onclick="loadWelcomeWindow();return false;" href="#" title="" id="welcome-modal-link" name="welcome-modal-link" class="thickbox">View EASE Framework Welcome Page for getting started hints</a>
+                <a onclick="loadWelcomeWindow();return false;" href="#" title="" id="welcome-modal-link" name="welcome-modal-link">View EASE Framework Welcome Page for getting started hints</a>
             </span>
             <form method="post" action="options.php">
             <?php settings_fields( 'easeoption-group1' );
