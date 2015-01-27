@@ -2,7 +2,7 @@
 Contributors: loomtronic, cloudward, jstrid
 Tags: Amazon, AWS, EASE, Google, Google Docs, Google Drive, Google Sheets, S3, Forms, Membership, Database, eCommerce, Storage, Google Cloud, spreadsheets, fields
 Requires at least: 3.5
-Tested up to: 4.0
+Tested up to: 4.1
 Stable tag: trunk
 License: GPLv2 
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
