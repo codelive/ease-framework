@@ -15,7 +15,7 @@
 */
 
 /**
- * Interpreter for use with the EASE Core to process EASE variables and apply contexts
+ * EASE Framework Interpreter to process EASE variables and apply contexts
  *
  * @author Mike <mike@cloudward.com>
  */
@@ -43,7 +43,7 @@ class ease_interpreter
 				// process the variable name to determine the bucket type and any injection context
 				$injected = true;
 				$bucket_key_parts = explode('.', $matches[1], 2);
-				if(count($bucket_key_parts)==2) {					
+				if(count($bucket_key_parts)==2) {
 					$bucket = rtrim(strtolower($bucket_key_parts[0]));
 					$key = ltrim(@$bucket_key_parts[1]);
 				} else {
@@ -66,7 +66,7 @@ class ease_interpreter
 				if($bucket=='session') {
 					if(isset($_SESSION[$key])) {
 						$value = $_SESSION[$key];
-					} elseif(isset($_SESSION[$key_lower])) {						
+					} elseif(isset($_SESSION[$key_lower])) {
 						$value = $_SESSION[$key_lower];
 					} else {
 						$value = '';
@@ -74,7 +74,7 @@ class ease_interpreter
 				} elseif($bucket=='cookie') {
 					if(isset($_COOKIE[$key])) {
 						$value = $_COOKIE[$key];
-					} elseif(isset($_COOKIE[$key_lower])) {						
+					} elseif(isset($_COOKIE[$key_lower])) {
 						$value = $_COOKIE[$key_lower];
 					} else {
 						$value = '';
@@ -90,7 +90,7 @@ class ease_interpreter
 				} elseif($bucket=='url') {
 					if(is_array($this->override_url_params)) {
 						if(isset($this->override_url_params[$key])) {
-							$value = $this->override_url_params[$key];							
+							$value = $this->override_url_params[$key];
 						} elseif(isset($this->override_url_params[$key_lower])) {
 							$value = $this->override_url_params[$key_lower];
 						} else {
@@ -215,6 +215,13 @@ class ease_interpreter
 		$string = preg_replace_callback(
 			'/' . preg_quote($this->core->ease_block_start, '/') . '\s*(.*?)\s*' . preg_quote($this->core->ease_block_end, '/') . '/is',
 			function($matches) use ($column_letter_by_name, $cell_value_by_column_letter, $local_variables, $additional_context) {
+				if($matches[1]=='lastrow') {
+					if($local_variables['rownumber']==$local_variables['numberofrows']) {
+						return 'yes';
+					} else {
+						return '';
+					}
+				}
 				$context_stack = ease_interpreter::extract_context_stack($matches[1]);
 				if($additional_context!==null) {
 					$context_stack[] = $additional_context;
@@ -479,11 +486,12 @@ class ease_interpreter
 
 	public static function apply_context_stack(&$string, $context_stack) {
 		if(is_array($context_stack) && count($context_stack)>0) {
+			// TODO!! change this next line to avoid PHP Notice: Array to string conversion
 			$context_stack = array_unique($context_stack);
 			end($context_stack);
 			while($context = array_pop($context_stack)) {
 				if(is_array($context)) {
-					// this is a context with additional parameters
+					// this is a context with additional parameters, such as:   date "M/D/Y"
 					switch($context['context']) {
 						case 'hash':
 							$string = hash($context['algo'], $context['salt'] . $string);
@@ -519,7 +527,8 @@ class ease_interpreter
 								}
 								$string = mktime($hour, $minute, $second, $month, $day, $year);
 							} else {
-								// check for other date formats???
+								// this should work for any other standardized datetime format
+								$string = strtotime($string);
 							}
 							if(isset($context['adjustment_seconds'])) {
 								$string = $string + $context['adjustment_seconds'];
@@ -643,10 +652,76 @@ class ease_interpreter
 							break;
 						case 'pdate':
 						case 'phpdate':
+							// date with format string, using the PHP date formats
+							if(preg_match('/^[0-9]+(\.[0-9]+|)$/', $string, $matches)) {
+								// the value is already in decimal format... assume it is already a timestamp
+							} elseif(preg_match('/^([0-9]{1,2})\s*\/\s*([0-9]{1,2})\s*\/\s*([0-9]{4})\s*(([0-9]+)|)(\s*:\s*([0-9]+)|)(\s*:\s*([0-9]+)|)\s*(am|pm|a|p|)$/is', $string, $matches)) {
+								// this will convert strings like "09/19/2013 8:30 AM" into seconds since midnight starting jan 1st, 1970
+								$month = intval($matches[1]);
+								$day = intval($matches[2]);
+								$year = intval($matches[3]);
+								$hour = intval($matches[5]);
+								$minute = intval($matches[7]);
+								$second = intval($matches[9]);
+								$ampm = strtolower($matches[10]);
+								if(($ampm=='pm' || $ampm=='p') && $hour!=12) {
+									$hour += 12;
+								}
+								$string = mktime($hour, $minute, $second, $month, $day, $year);
+							} elseif(preg_match('/^([0-9]{4})\s*-\s*([0-9]{2})\s*-\s*([0-9]{2})\s*(([0-9]+)|)(\s*:\s*([0-9]+)|)(\s*:\s*([0-9]+)|)\s*(am|pm|a|p|)$/is', $string, $matches)) {
+								// this will convert strings that match the system.date_time_short syntax like "1979-01-17 07:43:34" into seconds since midnight starting jan 1st, 1970
+								$month = intval($matches[2]);
+								$day = intval($matches[3]);
+								$year = intval($matches[1]);
+								$hour = intval($matches[5]);
+								$minute = intval($matches[7]);
+								$second = intval($matches[9]);
+								$ampm = strtolower($matches[10]);
+								if(($ampm=='pm' || $ampm=='p') && $hour!=12) {
+									$hour += 12;
+								}
+								$string = mktime($hour, $minute, $second, $month, $day, $year);
+							} else {
+								// this should work for any other standardized datetime format
+								$string = strtotime($string);
+							}
 							$timestamp = intval($string);
 							$string = date($context['format_string'], $timestamp);
 						case 'date':
-							// breaking the PHP standard for date format strings to support "M/D/Y h:mm:ss A" instead
+							// date with output format string
+							// breaking the PHP standard for date format strings to support a more readable "M/D/Y h:mm:ss A"
+							if(preg_match('/^[0-9]+(\.[0-9]+|)$/', $string, $matches)) {
+								// the value is already in decimal format... assume it is already a timestamp
+							} elseif(preg_match('/^([0-9]{1,2})\s*\/\s*([0-9]{1,2})\s*\/\s*([0-9]{4})\s*(([0-9]+)|)(\s*:\s*([0-9]+)|)(\s*:\s*([0-9]+)|)\s*(am|pm|a|p|)$/is', $string, $matches)) {
+								// this will convert strings like "09/19/2013 8:30 AM" into seconds since midnight starting jan 1st, 1970
+								$month = intval($matches[1]);
+								$day = intval($matches[2]);
+								$year = intval($matches[3]);
+								$hour = intval($matches[5]);
+								$minute = intval($matches[7]);
+								$second = intval($matches[9]);
+								$ampm = strtolower($matches[10]);
+								if(($ampm=='pm' || $ampm=='p') && $hour!=12) {
+									$hour += 12;
+								}
+								$string = mktime($hour, $minute, $second, $month, $day, $year);
+							} elseif(preg_match('/^([0-9]{4})\s*-\s*([0-9]{2})\s*-\s*([0-9]{2})\s*(([0-9]+)|)(\s*:\s*([0-9]+)|)(\s*:\s*([0-9]+)|)\s*(am|pm|a|p|)$/is', $string, $matches)) {
+								// this will convert strings that match the system.date_time_short syntax like "1979-01-17 07:43:34" into seconds since midnight starting jan 1st, 1970
+								$month = intval($matches[2]);
+								$day = intval($matches[3]);
+								$year = intval($matches[1]);
+								$hour = intval($matches[5]);
+								$minute = intval($matches[7]);
+								$second = intval($matches[9]);
+								$ampm = strtolower($matches[10]);
+								if(($ampm=='pm' || $ampm=='p') && $hour!=12) {
+									$hour += 12;
+								}
+								$string = mktime($hour, $minute, $second, $month, $day, $year);
+							} else {
+								// this should work for any other standardized datetime format
+								$string = strtotime($string);
+							}
 							$timestamp = intval($string);
 							// process the date format string for replacement tokens
 							$string = '';
@@ -702,17 +777,17 @@ class ease_interpreter
 										// hour number
 										$string .= date('g', $timestamp);
 										$context['format_string'] = substr($context['format_string'], 1);
-										continue;                 
+										continue;
 									case 'm':
 									    // minute number
 										$string .= intval(date('i', $timestamp));
 										$context['format_string'] = substr($context['format_string'], 1);
-										continue;                 
+										continue;
 									case 's':
 									    // second number
 										$string .= intval(date('s', $timestamp));
 										$context['format_string'] = substr($context['format_string'], 1);
-										continue;                 
+										continue;
 									case 'A':
 										// AM or PM
 										$string .= date('A', $timestamp);
@@ -752,11 +827,13 @@ class ease_interpreter
 							$string = htmlspecialchars(urlencode($string));
 							break;
 						case 'dollars':
+						case 'dollar':
 						case 'usd':
 						case '$':
 							$string = '$ ' . number_format(round(preg_replace('/[^0-9\.-]+/', '', $string), 2), 2, '.', ',');
 							break;
 						case 'euros':
+						case 'euro':
 						case 'eur':
 						case '€':
 							$string = '€ ' . number_format(round(preg_replace('/[^0-9\.-]+/', '', $string), 2), 2, ',', '.');
@@ -775,13 +852,33 @@ class ease_interpreter
 						case 'int':
 							$string = intval($string);
 							break;
+						case 'span':
+						case 'seconds':
 						case 'timespan':
 							if(preg_match('/^([0-9]+)(:([0-9]{2})|)(:([0-9]{2})|)$/', $string, $matches)) {
 								// matched h:mm:ss format, convert that to total number of seconds
 								$string = intval($matches[5]) + (intval($matches[3]) * 60) + (intval($matches[1]) * 60 * 60);
 							}
 							break;
+						case 'minutes':
+							if(preg_match('/^([0-9]+)(:([0-9]{2})|)(:([0-9]{2})|)$/', $string, $matches)) {
+								// matched h:mm:ss format, convert that to total number of seconds
+								$string = (intval($matches[5]) + (intval($matches[3]) * 60) + (intval($matches[1]) * 60 * 60)) / 60;
+							}
+							break;
+						case 'hours':
+							if(preg_match('/^([0-9]+)(:([0-9]{2})|)(:([0-9]{2})|)$/', $string, $matches)) {
+								// matched h:mm:ss format, convert that to total number of seconds
+								$string = (intval($matches[5]) + (intval($matches[3]) * 60) + (intval($matches[1]) * 60 * 60)) / (60 * 60);
+							}
+							break;
 						case 'timestamp':
+						case 'datetime':
+						case 'date':
+						case 'time':
+						case 'day':
+						case 'month':
+						case 'year':
 							if(preg_match('/^[0-9]+(\.[0-9]+|)$/', $string, $matches)) {
 								// the value is already in decimal format... assume it is already a timestamp
 							} elseif(preg_match('/^([0-9]+)\s*\/\s*([0-9]+)\s*\/\s*([0-9]+)\s*(([0-9]+)|)(\s*:\s*([0-9]+)|)(\s*:\s*([0-9]+)|)\s*(am|pm|a|p|)$/is', $string, $matches)) {
@@ -811,7 +908,27 @@ class ease_interpreter
 								}
 								$string = mktime($hour, $minute, $second, $month, $day, $year);
 							} else {
-								// check for other date formats???
+								// this should work for any other standardized datetime format
+								$string = strtotime($string);
+							}
+							$timestamp = intval($string);
+							switch($context) {
+								case 'datetime':
+									$string = date('m/d/Y g:i:s A', $timestamp);
+									break;
+								case 'date':
+									$string = date('m/d/Y', $timestamp);
+									break;
+								case 'month':
+									$string = intval(date('m', $timestamp));
+									break;
+								case 'day':
+									$string = intval(date('d', $timestamp));
+									break;
+								case 'year':
+									$string = intval(date('Y', $timestamp));
+									break;
+								default:
 							}
 							break;
 						default:

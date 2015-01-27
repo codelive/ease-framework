@@ -103,6 +103,10 @@ The EASE Framework connects to your local database. If your hosting provider loc
 * Upgraded EASE Framework to 2.9.17 
 * Fixed jQuery Validation plugin vulnerability issue
 
+= 0.1.7 =
+* Upgraded to EASE Framework 3.3.5
+* Tested for compatibility with WordPress 4.1
+
 == Upgrade Notice ==
 
 = 0.1.5 =

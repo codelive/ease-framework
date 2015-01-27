@@ -250,7 +250,7 @@ class ease_form_handler
 					$this->core->db->exec("	DROP TABLE IF EXISTS ease_forms;
 											CREATE TABLE ease_forms (
 												form_id VARCHAR(64) NOT NULL PRIMARY KEY,
-												created_on timestamp NOT NULL default CURRENT_TIMESTAMP, 
+												created_on timestamp NOT NULL default CURRENT_TIMESTAMP,
 												base64_serialized_form_info TEXT NOT NULL DEFAULT ''
 											);	");
 					$result = $query->execute($params);
@@ -393,7 +393,6 @@ class ease_form_handler
 					if(isset($_FILES[$post_key]['tmp_name']) && trim($_FILES[$post_key]['tmp_name'])!='') {
 						// a file was uploaded for this field
 						$file_attributes = array_merge($file_attributes, $_FILES[$post_key]);
-						$new_row[$key] = $file_attributes['name'];
 						if(isset($_SERVER['SERVER_SOFTWARE'])
 						  && strpos($_SERVER['SERVER_SOFTWARE'], 'Google App Engine')!==false
 						  && isset($this->core->config['gs_bucket_name'])
@@ -402,14 +401,21 @@ class ease_form_handler
 							// removing '=' characters fixes the problem...
 							$file_attributes['tmp_name'] = str_replace('=', '', $file_attributes['tmp_name']);
 						}
+						$new_row[$key] = $file_attributes['name'];
+						$new_row[$key . '_type'] = $file_attributes['type'];
+						if($image_size = getimagesize($file_attributes['tmp_name'])) {
+							// this upload was for an image... store the height and width
+							$new_row[$key . '_image_width'] = $image_size[0];
+							$new_row[$key . '_image_height'] = $image_size[1];
+						}
 						if(isset($file_attributes['folder']) && trim($file_attributes['folder'])!='') {
-							// initialize a Google Drive API client
+							// the file was set to be uploaded to Google Drive... initialize a Google API client
 							$this->core->validate_google_access_token();
 							require_once 'ease/lib/Google/Client.php';
 							$client = new Google_Client();
 							$client->setClientId($this->core->config['gapp_client_id']);
 							$client->setClientSecret($this->core->config['gapp_client_secret']);
-							$client->setScopes('https://spreadsheets.google.com/feeds https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly');
+							$client->setScopes($this->core->config['gapp_scopes']);
 							$client->setAccessToken($this->core->config['gapp_access_token_json']);
 							if(isset($this->core->config['elasticache_config_endpoint']) && trim($this->core->config['elasticache_config_endpoint'])!='') {
 								// the Google APIs default use of memcache is not supported while using the AWS ElastiCache Cluster Client
@@ -447,7 +453,7 @@ class ease_form_handler
 								$try_count++;
 								try {
 									if($file_attributes['type']=='message/external-body') {
-										// this is likely an upload from a local AppEngine dev environment
+										// this is likely an upload from a local App Engine dev environment
 										// TODO! parse the file headers to get the X-AppEngine-Cloud-Storage-Object setting and process that file instead
 										break;
 									} else {
@@ -457,17 +463,34 @@ class ease_form_handler
 									continue;
 								}
 							}
-							if(isset($uploaded_file['webContentLink'])) {
+							if(isset($uploaded_file['webContentLink']) && trim($uploaded_file['webContentLink'])!='') {
 								// the web content link is what is provided to users to download
-								$new_row[$key . '_drive_web_url'] = $uploaded_file['webContentLink'];
-								$new_row[$key . '_web_url'] = $uploaded_file['webContentLink'];
+								if(preg_match('/^(.*?)&export=download$/is', $uploaded_file['webContentLink'], $matches)) {
+									// the Google Drive Web URL was set to export the file as a download... strip that off
+									$new_row[$key . '_drive_web_url'] = $matches[1];
+									$new_row[$key . '_web_url'] = $matches[1];
+									$new_row[$key . '_drive_download_url'] = $uploaded_file['webContentLink'];
+									$new_row[$key . '_download_url'] = $uploaded_file['webContentLink'];
+								} else {
+									$new_row[$key . '_drive_web_url'] = $uploaded_file['webContentLink'];
+									$new_row[$key . '_web_url'] = $uploaded_file['webContentLink'];
+								}
 							}
-							if(isset($uploaded_file['selfLink'])) {
+							if(isset($uploaded_file['thumbnailLink']) && trim($uploaded_file['thumbnailLink'])!='') {
+								if(preg_match('/^(.*?)s([0-9]+)$/is', $uploaded_file['thumbnailLink'], $matches)) {
+									$new_row[$key . '_drive_thumbnail_url'] = $matches[1];
+									$new_row[$key . '_thumbnail_url'] = $matches[1];
+								} else {
+									$new_row[$key . '_drive_thumbnail_url'] = $uploaded_file['thumbnailLink'];
+									$new_row[$key . '_thumbnail_url'] = $uploaded_file['thumbnailLink'];
+								}
+							}
+							if(isset($uploaded_file['selfLink']) && trim($uploaded_file['selfLink'])!='') {
 								// the self link can be used to update the file
 								$new_row[$key . '_drive_url'] = $uploaded_file['selfLink'];
 							}
 						} else {
-							// the uploaded file was not saved in google drive, store it in the file share for the environment
+							// the uploaded file was not set to be uploaded to Google Drive, store it in the environment file share
 							if(isset($_SERVER['SERVER_SOFTWARE'])
 							  && strpos($_SERVER['SERVER_SOFTWARE'], 'Google App Engine')!==false
 							  && isset($this->core->config['gs_bucket_name'])
@@ -751,6 +774,17 @@ class ease_form_handler
 			}
 			$result = $this->core->send_email($mail_options);
 		}
+		// execute any SEND GMAIL commands for the form action
+		@$this->form_info['send_gmail_list_by_action'][$action] = array_merge(
+			(array)$this->form_info['send_gmail_list_by_action'][$action],
+			(array)$this->form_info['send_gmail_list_by_action']['done']
+		);
+		foreach($this->form_info['send_gmail_list_by_action'][$action] as $mail_options) {
+			foreach(array_keys($mail_options) as $mail_option_key) {
+				$this->inject_form_variables($mail_options[$mail_option_key], $params[':uuid'], $new_row);
+			}
+			$result = $this->core->send_gmail($mail_options);
+		}
 		// only process SQL backed form actions if a database connection exists and hasn't been disabled
 		if($this->core->db && !$this->core->db_disabled) {
 			// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
@@ -1008,7 +1042,9 @@ class ease_form_handler
 				}
 			}
 		}
+		// only process file uploads for SQL backed forms if a database connection exists and hasn't been disabled
 		if(isset($this->form_info['files']) && is_array($this->form_info['files']) && $this->core->db && !$this->core->db_disabled) {
+			// there were file upload fields in the form, check for uploaded files
 			foreach($this->form_info['files'] as $post_key=>$file_attributes) {
 				$bucket_key_parts = explode('.', $file_attributes['map'], 2);
 				if(count($bucket_key_parts)==2) {
@@ -1027,18 +1063,29 @@ class ease_form_handler
 					if(isset($_FILES[$post_key]['tmp_name']) && trim($_FILES[$post_key]['tmp_name'])!='') {
 						// a file was uploaded for this field
 						$file_attributes = array_merge($file_attributes, $_FILES[$post_key]);
+						if(isset($_SERVER['SERVER_SOFTWARE'])
+						  && strpos($_SERVER['SERVER_SOFTWARE'], 'Google App Engine')!==false
+						  && isset($this->core->config['gs_bucket_name'])
+						  && trim($this->core->config['gs_bucket_name'])!='') {
+							// the GCS form handler adds broken quoted-printable encoding if the bucket name is longer than 37 characters
+							// removing '=' characters fixes the problem...
+							$file_attributes['tmp_name'] = str_replace('=', '', $file_attributes['tmp_name']);
+						}
 						$updated_row[$key] = $file_attributes['name'];
-						// the GCS form handler adds broken quoted-printable encoding if the bucket name is longer than 37 characters
-						// removing '=' characters fixes the problem...
-						$file_attributes['tmp_name'] = str_replace('=', '', $file_attributes['tmp_name']);
+						$updated_row[$key . '_type'] = $file_attributes['type'];
+						if($image_size = getimagesize($file_attributes['tmp_name'])) {
+							// this upload was for an image... store the height and width
+							$updated_row[$key . '_image_width'] = $image_size[0];
+							$updated_row[$key . '_image_height'] = $image_size[1];
+						}
 						if(isset($file_attributes['folder']) && trim($file_attributes['folder'])!='') {
-							// initialize a Google Drive API client
+							// the file was set to be uploaded to Google Drive... initialize a Google API client
 							$this->core->validate_google_access_token();
 							require_once 'ease/lib/Google/Client.php';
 							$client = new Google_Client();
 							$client->setClientId($this->core->config['gapp_client_id']);
 							$client->setClientSecret($this->core->config['gapp_client_secret']);
-							$client->setScopes('https://spreadsheets.google.com/feeds https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly');
+							$client->setScopes($this->core->config['gapp_scopes']);
 							$client->setAccessToken($this->core->config['gapp_access_token_json']);
 							if(isset($this->core->config['elasticache_config_endpoint']) && trim($this->core->config['elasticache_config_endpoint'])!='') {
 								// the Google APIs default use of memcache is not supported while using the AWS ElastiCache Cluster Client
@@ -1076,8 +1123,8 @@ class ease_form_handler
 								$try_count++;
 								try {
 									if($file_attributes['type']=='message/external-body') {
-										// this is likely an upload from a local dev environment
-										// TODO!! parse the file headers to get the X-AppEngine-Cloud-Storage-Object setting and process that file instead
+										// this is likely an upload from a local App Engine dev environment
+										// TODO! parse the file headers to get the X-AppEngine-Cloud-Storage-Object setting and process that file instead
 										break;
 									} else {
 										$uploaded_file = $service->files->insert($file, array('data'=>file_get_contents($file_attributes['tmp_name']), 'mimeType'=>$file_attributes['type'], 'uploadType'=>'multipart'));
@@ -1086,18 +1133,34 @@ class ease_form_handler
 									continue;
 								}
 							}
-							$updated_row[$key] = $file_attributes['name'];
 							if(isset($uploaded_file['webContentLink'])) {
 								// the web content link is what is provided to users to download
-								$updated_row[$key . '_drive_web_url'] = $uploaded_file['webContentLink'];
-								$updated_row[$key . '_web_url'] = $uploaded_file['webContentLink'];
+								if(preg_match('/^(.*)&export=download$/is', $uploaded_file['webContentLink'], $matches)) {
+									// the Google Drive Web URL was set to export the file as a download... strip that off
+									$updated_row[$key . '_drive_web_url'] = $matches[1];
+									$updated_row[$key . '_web_url'] = $matches[1];
+									$updated_row[$key . '_drive_download_url'] = $uploaded_file['webContentLink'];
+									$updated_row[$key . '_download_url'] = $uploaded_file['webContentLink'];
+								} else {
+									$updated_row[$key . '_drive_web_url'] = $uploaded_file['webContentLink'];
+									$updated_row[$key . '_web_url'] = $uploaded_file['webContentLink'];
+								}
+							}
+							if(isset($uploaded_file['thumbnailLink']) && trim($uploaded_file['thumbnailLink'])!='') {
+								if(preg_match('/^(.*?)s([0-9]+)$/is', $uploaded_file['thumbnailLink'], $matches)) {
+									$updated_row[$key . '_drive_thumbnail_url'] = $matches[1];
+									$updated_row[$key . '_thumbnail_url'] = $matches[1];
+								} else {
+									$updated_row[$key . '_drive_thumbnail_url'] = $uploaded_file['thumbnailLink'];
+									$updated_row[$key . '_thumbnail_url'] = $uploaded_file['thumbnailLink'];
+								}
 							}
 							if(isset($uploaded_file['selfLink'])) {
 								// the self link can be used to update the file
 								$updated_row[$key . '_drive_url'] = $uploaded_file['selfLink'];
 							}
 						} else {
-							// the uploaded file was not saved in google drive, store it in the file share for the environment
+							// the uploaded file was not set to be uploaded to Google Drive, store it in the environment file share
 							if(isset($_SERVER['SERVER_SOFTWARE'])
 							  && strpos($_SERVER['SERVER_SOFTWARE'], 'Google App Engine')!==false
 							  && isset($this->core->config['gs_bucket_name'])
@@ -1231,7 +1294,7 @@ class ease_form_handler
 		foreach($this->form_info['conditional_actions'][$action] as $conditional_action) {
 			$remaining_condition = $conditional_action['condition'];
 			$php_condition_string = '';
-			while(preg_match('/^(&&|\|\||and|or|xor){0,1}\s*(!|not){0,1}([(\s]*)"(.*?)"\s*(==|!=|>|>=|<|<=|<>|===|!==|=|is)\s*"(.*?)"([)\s]*)/is', $remaining_condition, $matches)) {
+			while(preg_match('/^(&&|\|\||and|or|xor){0,1}\s*(!|not){0,1}([(\s]*)"(.*?)"\s*(==|!=|>|>=|<|<=|<>|===|!==|=|is)\s*"((([^"]*' . preg_quote($this->core->ease_block_start, '/') . '.*?' . preg_quote($this->core->ease_block_end, '/') . '[^"]*)+|.*?))"([)\s]*)/is', $remaining_condition, $matches)) {
 				if(strtolower($matches[1])=='and') {
 					$matches[1] = '&&';
 				}
@@ -1252,7 +1315,7 @@ class ease_form_handler
 					. var_export($matches[4], true)
 					. $matches[5]
 					. var_export($matches[6], true)
-					. $matches[7];
+					. $matches[9];
 				$remaining_condition = substr($remaining_condition, strlen($matches[0]));
 			}
 			if(@eval('if(' . $php_condition_string . ') return true; else return false;')) {
@@ -1413,6 +1476,17 @@ class ease_form_handler
 				$this->inject_form_variables($mail_options[$mail_option_key], $params[':uuid'], $updated_row, $existing_record);
 			}
 			$result = $this->core->send_email($mail_options);
+		}
+		// execute any SEND GMAIL commands for the form action
+		@$this->form_info['send_gmail_list_by_action'][$action] = array_merge(
+			(array)$this->form_info['send_gmail_list_by_action'][$action],
+			(array)$this->form_info['send_gmail_list_by_action']['done']
+		);
+		foreach($this->form_info['send_gmail_list_by_action'][$action] as $mail_options) {
+			foreach(array_keys($mail_options) as $mail_option_key) {
+				$this->inject_form_variables($mail_options[$mail_option_key], $params[':uuid'], $updated_row, $existing_record);
+			}
+			$result = $this->core->send_gmail($mail_options);
 		}
 		// only process SQL backed form actions if a database connection exists and hasn't been disabled
 		if($this->core->db && !$this->core->db_disabled) {
@@ -1677,6 +1751,17 @@ class ease_form_handler
 			}
 			$result = $this->core->send_email($mail_options);
 		}
+		// execute any SEND GMAIL commands for the form action
+		@$this->form_info['send_gmail_list_by_action'][$action] = array_merge(
+			(array)$this->form_info['send_gmail_list_by_action'][$action],
+			(array)$this->form_info['send_gmail_list_by_action']['done']
+		);
+		foreach($this->form_info['send_gmail_list_by_action'][$action] as $mail_options) {
+			foreach(array_keys($mail_options) as $mail_option_key) {
+				$this->inject_form_variables($mail_options[$mail_option_key], $params[':uuid']);
+			}
+			$result = $this->core->send_gmail($mail_options);
+		}
 		// only process SQL backed form actions if a database connection exists and hasn't been disabled
 		if($this->core->db && !$this->core->db_disabled) {
 			// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
@@ -1916,12 +2001,12 @@ class ease_form_handler
 			if($spreadSheet===null) {
 				// the supplied Google Sheet name did not match an existing Google Sheet
 				// create a new Google Sheet using the supplied name
-				// initialize a Google Drive API client
+				// initialize a Google API client
 				require_once 'ease/lib/Google/Client.php';
 				$client = new Google_Client();
 				$client->setClientId($this->core->config['gapp_client_id']);
 				$client->setClientSecret($this->core->config['gapp_client_secret']);
-				$client->setScopes('https://spreadsheets.google.com/feeds https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly');
+				$client->setScopes($this->core->config['gapp_scopes']);
 				$client->setAccessToken($this->core->config['gapp_access_token_json']);
 				if(isset($this->core->config['elasticache_config_endpoint']) && trim($this->core->config['elasticache_config_endpoint'])!='') {
 					// the Google APIs default use of memcache is not supported while using the AWS ElastiCache Cluster Client
@@ -2183,6 +2268,17 @@ class ease_form_handler
 			}
 			$result = $this->core->send_email($mail_options);
 		}
+		// execute any SEND GMAIL commands for the form action
+		@$this->form_info['send_gmail_list_by_action'][$action] = array_merge(
+			(array)$this->form_info['send_gmail_list_by_action'][$action],
+			(array)$this->form_info['send_gmail_list_by_action']['done']
+		);
+		foreach($this->form_info['send_gmail_list_by_action'][$action] as $mail_options) {
+			foreach(array_keys($mail_options) as $mail_option_key) {
+				$this->inject_form_variables($mail_options[$mail_option_key], $row['easerowid'], $row);
+			}
+			$result = $this->core->send_gmail($mail_options);
+		}
 		// only process SQL backed form actions if a database connection exists and hasn't been disabled
 		if($this->core->db && !$this->core->db_disabled) {
 			// execute any CREATE RECORD - FOR CLOUD SQL TABLE commands for the form action
@@ -2421,12 +2517,12 @@ class ease_form_handler
 			if($spreadSheet===null) {
 				// the supplied Google Sheet name did not match an existing Google Sheet
 				// create a new Google Sheet using the supplied name
-				// initialize a Google Drive API client
+				// initialize a Google API client
 				require_once 'ease/lib/Google/Client.php';
 				$client = new Google_Client();
 				$client->setClientId($this->core->config['gapp_client_id']);
 				$client->setClientSecret($this->core->config['gapp_client_secret']);
-				$client->setScopes('https://spreadsheets.google.com/feeds https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly');
+				$client->setScopes($this->core->config['gapp_scopes']);
 				$client->setAccessToken($this->core->config['gapp_access_token_json']);
 				if(isset($this->core->config['elasticache_config_endpoint']) && trim($this->core->config['elasticache_config_endpoint'])!='') {
 					// the Google APIs default use of memcache is not supported while using the AWS ElastiCache Cluster Client
@@ -2689,6 +2785,17 @@ class ease_form_handler
 				$this->inject_form_variables($mail_options[$mail_option_key], $this->form_info['row_uuid'], $row);
 			}
 			$result = $this->core->send_email($mail_options);
+		}
+		// execute any SEND GMAIL when creating commands
+		@$this->form_info['send_gmail_list_by_action'][$action] = array_merge(
+			(array)$this->form_info['send_gmail_list_by_action'][$action],
+			(array)$this->form_info['send_gmail_list_by_action']['done']
+		);
+		foreach($this->form_info['send_gmail_list_by_action'][$action] as $mail_options) {
+			foreach(array_keys($mail_options) as $mail_option_key) {
+				$this->inject_form_variables($mail_options[$mail_option_key], $this->form_info['row_uuid'], $row);
+			}
+			$result = $this->core->send_gmail($mail_options);
 		}
 		// only process SQL backed form actions if a database connection exists and hasn't been disabled
 		if($this->core->db && !$this->core->db_disabled) {
@@ -2995,6 +3102,17 @@ class ease_form_handler
 				$this->inject_form_variables($mail_options[$mail_option_key], $this->form_info['row_uuid'], $row);
 			}
 			$result = $this->core->send_email($mail_options);
+		}
+		// execute any SEND GMAIL when creating commands
+		@$this->form_info['send_gmail_list_by_action'][$action] = array_merge(
+			(array)$this->form_info['send_gmail_list_by_action'][$action],
+			(array)$this->form_info['send_gmail_list_by_action']['done']
+		);
+		foreach($this->form_info['send_gmail_list_by_action'][$action] as $mail_options) {
+			foreach(array_keys($mail_options) as $mail_option_key) {
+				$this->inject_form_variables($mail_options[$mail_option_key], $this->form_info['row_uuid'], $row);
+			}
+			$result = $this->core->send_gmail($mail_options);
 		}
 		// only process SQL backed form actions if a database connection exists and hasn't been disabled
 		if($this->core->db && !$this->core->db_disabled) {
@@ -3336,6 +3454,17 @@ class ease_form_handler
 				$this->inject_form_variables($mail_options[$mail_option_key], $params[':uuid']);
 			}
 			$result = $this->core->send_email($mail_options);
+		}
+		// execute any SEND GMAIL commands for the checklist form action
+		@$this->form_info['send_gmail_list_by_action'][$action] = array_merge(
+			(array)$this->form_info['send_gmail_list_by_action'][$action],
+			(array)$this->form_info['send_gmail_list_by_action']['done']
+		);
+		foreach($this->form_info['send_gmail_list_by_action'][$action] as $mail_options) {
+			foreach(array_keys($mail_options) as $mail_option_key) {
+				$this->inject_form_variables($mail_options[$mail_option_key], $params[':uuid']);
+			}
+			$result = $this->core->send_gmail($mail_options);
 		}
 		// only process SQL backed form actions if a database connection exists and hasn't been disabled
 		if($this->core->db && !$this->core->db_disabled) {

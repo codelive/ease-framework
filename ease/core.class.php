@@ -24,6 +24,7 @@ class ease_core
 	public $config = array();
 	public $globals = array();
 	public $environment;
+	public $namespace = '';
 	public $db;
 	public $memcache;
 	public $application_root;
@@ -38,7 +39,8 @@ class ease_core
 	public $reserved_buckets = array('system', 'session', 'cookie', 'url', 'uri', 'cache', 'config', 'request', 'post', 'form', 'ease_forms');
 	public $reserved_sql_tables = array('ease_config', 'ease_google_spreadsheets', 'ease_forms');
 	public $reserved_sql_columns = array('instance_id', 'id', 'uuid', 'created_on', 'updated_on');
-	public $namespace = '';
+	public $include_from_sql = null;
+	public $google_api_scopes = 'https://spreadsheets.google.com/feeds https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/gmail.compose';
 	public $google_spreadsheets = array();
 	public $google_spreadsheets_by_name = array();
 	public $catch_cookies = false;
@@ -48,10 +50,11 @@ class ease_core
 	public $db_disabled = false;
 	public $php_disabled = false;
 	public $include_disabled = false;
-	public $include_from_sql = null;
 	public $inject_config_disabled = false;
 	public $deliver_disabled = false;
 	public $file_upload_disabled = false;
+	public $parse_errors = null;
+	public $google_api_errors = null;
 
 	function __construct($params=array()) {
 		// use UTF-8 character encoding when parsing or generating text
@@ -217,9 +220,9 @@ class ease_core
 	}
 
 	function __destruct() {
-		// explicitly disconnect the memcache and database
-		$this->memcache = null;
+		// explicitly disconnect the database and memcache
 		$this->db = null;
+		$this->memcache = null;
 	}
 
 	function handle_request() {
@@ -330,6 +333,10 @@ class ease_core
 		require_once 'ease/parser.class.php';
 		$ease_parser = new ease_parser($this);
 		$process_result = $ease_parser->process($content, $return_output_buffer);
+		if(count($ease_parser->errors) > 0) {
+			$this->parse_errors[] = $ease_parser->errors;
+		}
+		$ease_parser = null;
 		return $process_result;
 	}
 
@@ -341,18 +348,26 @@ class ease_core
 		$form_handler->process();
 	}
 
-	// process oAuth 2.0 callback requests for the Google Drive API
+	// process OAuth 2.0 callbacks for Google API Access Tokens
 	function handle_google_oauth2callback() {
-		// load client info for the Google Apps API
+		// load Google API Client info
 		$this->set_global_system_vars();
 		$this->load_system_config_var('gapp_client_id');
 		$this->load_system_config_var('gapp_client_secret');
+		$this->load_system_config_var('gapp_scopes');
+		if((!isset($this->config['gapp_scopes'])) || (trim($this->config['gapp_scopes'])=='')) {
+			// Google API Scopes were not configured... 
+			// this is likely an app that has upgraded from an earlier version of the EASE Framework that didn't store the scopes
+			// set the scopes to the full 
+			$this->set_system_config_var('gapp_scopes', $this->google_api_scopes);
+		}
+		// initialize a Google API Client
 		require_once 'ease/lib/Google/Client.php';
 		$client = new Google_Client();
 		$client->setClientId($this->config['gapp_client_id']);
 		$client->setClientSecret($this->config['gapp_client_secret']);
 		$client->setRedirectUri((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']=='on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . $this->service_endpoints['google_oauth2callback']);
-		$client->setScopes('https://spreadsheets.google.com/feeds https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly');
+		$client->setScopes($this->config['gapp_scopes']);
 		$client->setAccessType('offline');
 		$client->setApprovalPrompt('force');
 		if(isset($this->config['elasticache_config_endpoint']) && trim($this->config['elasticache_config_endpoint'])!='') {
@@ -382,7 +397,7 @@ class ease_core
 					echo "<b>$key</b>: $value<br />\n";
 					if($key=='error') {
 						if($value=='invalid_client') {
-							// the client is invalid, so wipe the settings in the memcache and DB... revert to settings in easeConfig.json
+							// the client is invalid, so wipe the settings in the memcache and database... revert to settings in easeConfig.json
 							if($this->memcache) {
 								$this->memcache->delete('system.gapp_client_id');
 								$this->memcache->delete('system.gapp_client_secret');
@@ -393,8 +408,8 @@ class ease_core
 								$query->execute(array(':name'=>'gapp_client_secret'));
 							}
 						} elseif($value=='unauthorized_client' || $value=='invalid_grant') {
-							// the stored access tokens were not created for this client, so wipe them as a new client has been configured
-							// the user will be prompted to grant permissions again to link this app to a google drive account
+							// the Google API Access Tokens were not created for this client, so wipe them as a new client has been configured
+							// the user will be prompted to grant permissions again to link this app to a google account
 							$this->flush_google_access_tokens();
 						}
 					}
@@ -410,55 +425,18 @@ class ease_core
 			echo 'Invalid Access Token';
 			exit;
 		}
-		// store the new access token in the memcache and DB
+		// store the new Google API Access Token in the memcache and database
 		$gapp_access_token = $access_token->access_token;
 		$gapp_expire_time = $_SERVER['REQUEST_TIME'] + $access_token->expires_in;
 		$gapp_refresh_token = $access_token->refresh_token;
-		if($this->memcache) {
-	 		$this->memcache->set('system.gapp_access_token_json', $gapp_access_token_json);
-			$this->memcache->set('system.gapp_access_token', $gapp_access_token);
-			$this->memcache->set('system.gapp_expire_time', $gapp_expire_time);
-			$this->memcache->set('system.gapp_refresh_token', $gapp_refresh_token);
-		}
-		if($this->db) {
-			$query = $this->db->prepare("	REPLACE INTO ease_config
-												(name, value)
-											VALUES
-												('gapp_access_token_json', :gapp_access_token_json),
-												('gapp_access_token', :gapp_access_token),
-												('gapp_expire_time', :gapp_expire_time),
-												('gapp_refresh_token', :gapp_refresh_token),
-												('gapp_client_id', :gapp_client_id),
-												('gapp_client_secret', :gapp_client_secret);	");
-			$params = array(
-				':gapp_access_token_json'=>$gapp_access_token_json,
-				':gapp_access_token'=>$gapp_access_token,
-				':gapp_expire_time'=>$gapp_expire_time,
-				':gapp_refresh_token'=>$gapp_refresh_token,
-				':gapp_client_id'=>$this->config['gapp_client_id'],
-				':gapp_client_secret'=>$this->config['gapp_client_secret']
-			);
-			$result = $query->execute($params);
-			if(!$result) {
-				// the query failed... attempt to create the ease_config table, then try again
-				$this->db->exec("	CREATE TABLE ease_config (
-										name VARCHAR(64) NOT NULL PRIMARY KEY,
-										value TEXT NOT NULL DEFAULT ''
-									);	");
-				$result = $query->execute($params);
-				if(!$result) {
-					// the query failed again... attempt to update values individually
-					$query = $this->db->prepare("UPDATE ease_config SET value=:value WHERE name=:name;");
-					$query->execute(array(':name'=>'gapp_access_token_json', ':value'=>$gapp_access_token_json));
-					$query->execute(array(':name'=>'gapp_access_token', ':value'=>$gapp_access_token));
-					$query->execute(array(':name'=>'gapp_expire_time', ':value'=>$gapp_expire_time));
-					$query->execute(array(':name'=>'gapp_refresh_token', ':value'=>$gapp_refresh_token));
-					$query->execute(array(':name'=>'gapp_client_id', ':value'=>$this->config['gapp_client_id']));
-					$query->execute(array(':name'=>'gapp_client_secret', ':value'=>$this->config['gapp_client_secret']));
-				}
-			}
-		}
-		// redirect back to the page that initiated the oAuth2 process
+		$this->set_system_config_var('gapp_access_token_json', $gapp_access_token_json);
+		$this->set_system_config_var('gapp_access_token', $gapp_access_token);
+		$this->set_system_config_var('gapp_expire_time', $gapp_expire_time);
+		$this->set_system_config_var('gapp_refresh_token', $gapp_refresh_token);
+		// store any values in the DB that may have just come from an easeConfig.json file
+		$this->set_system_config_var('gapp_client_id', $this->config['gapp_client_id']);
+		$this->set_system_config_var('gapp_client_secret', $this->config['gapp_client_secret']);
+		// redirect back to the page that initiated the OAuth 2.0 consent process
 		if(isset($_REQUEST['state']) && trim($_REQUEST['state'])!='') {
 			header('Location: ' . urldecode($_REQUEST['state']));
 		} else {
@@ -493,7 +471,7 @@ class ease_core
 			}
 			$this->db->exec('DROP TABLE IF EXISTS ease_google_spreadsheets;');
 		}
-		echo 'Successfully flushed the Spreadsheet Cache';
+		echo 'Successfully flushed the Google Sheet Cache';
 	}
 
 	function flush_meta_data_for_google_spreadsheet_by_id($google_spreadsheet_id, $google_spreadsheet_sheet_name='') {
@@ -567,7 +545,7 @@ class ease_core
 			$meta_data = false;
 		}
 		if($meta_data!==false) {
-			// a value was found in the cache, use that value and return it
+			// a value was found in the memcache, use that value and return it
 			$meta_data = (array)$meta_data;
 			foreach($meta_data as $key=>$value) {
 				if(is_object($value)) {
@@ -576,13 +554,13 @@ class ease_core
 			}
 			return $this->google_spreadsheets[$google_spreadsheet_id][$google_spreadsheet_sheet_name] = $meta_data;
 		} else {
-			// the Google Spreadsheet ID was not found in the cache; check for an available database
+			// the Google Spreadsheet ID was not found in the memcache; check for an available database
 			if($this->db) {
 				// a database is available, check if the EASE config in the database has a value set for the requested name
 				$query = $this->db->prepare("SELECT meta_data_json FROM ease_google_spreadsheets WHERE id=:id AND worksheet=:worksheet;");
 				if($query->execute(array(':id'=>$google_spreadsheet_id, ':worksheet'=>$google_spreadsheet_sheet_name))) {
 					if($row = $query->fetch(PDO::FETCH_ASSOC)) {
-						// a value was found in the database, use that value and set the value in the cache and return it
+						// a value was found in the database, use that value and set the value in the memcache and return it
 						$meta_data = json_decode($row['meta_data_json']);
 						$meta_data = (array)$meta_data;
 						foreach($meta_data as $key=>$value) {
@@ -637,7 +615,7 @@ class ease_core
 			$meta_data['id'] = $google_spreadsheet_id;
 			$meta_data['name'] = $google_spreadsheet_name;
 			$meta_data['worksheet'] = $google_spreadsheet_sheet_name;
-			// store the meta data in the cache and any available database, then return the meta data
+			// store the meta data in the memcache and any available database, then return the meta data
 			if($this->memcache) {
 				$this->memcache->set("system.google_spreadsheets_by_id.$google_spreadsheet_id.$google_spreadsheet_sheet_name", $meta_data);
 			}
@@ -686,7 +664,7 @@ class ease_core
 			// meta data for the spreadsheet was found already loaded
 			return $this->google_spreadsheets_by_name[$google_spreadsheet_name][$google_spreadsheet_sheet_name];
 		}
-		// meta data was not already loaded... check for it in the cache
+		// meta data was not already loaded... check for it in the memcache
 		if($this->memcache) {
 			if($this->namespace!='') {
 				$meta_data = $this->memcache->get("{$this->namespace}.system.google_spreadsheets_by_name.{$google_spreadsheet_name}.{$google_spreadsheet_sheet_name}");
@@ -697,7 +675,7 @@ class ease_core
 			$meta_data = false;
 		}
 		if($meta_data!==false) {
-			// meta data for the spreadsheet was found in the cache... cornvert the memcache object to an array and return it
+			// meta data for the spreadsheet was found in the memcache... cornvert the memcache object to an array and return it
 			$meta_data = (array)$meta_data;
 			foreach($meta_data as $key=>$value) {
 				if(is_object($value)) {
@@ -706,7 +684,7 @@ class ease_core
 			}
 			return $this->google_spreadsheets_by_name[$google_spreadsheet_name][$google_spreadsheet_sheet_name] = $meta_data;
 		} else {
-			// meta data for the spreadsheet was not found in the cache... check for it in any available databases
+			// meta data for the spreadsheet was not found in the memcache... check for it in any available databases
 			if($this->db) {
 				// a database is available, check for meta data for the spreadsheet
 				$query = $this->db->prepare("	SELECT meta_data_json FROM ease_google_spreadsheets 
@@ -779,7 +757,7 @@ class ease_core
 			$meta_data['id'] = $google_spreadsheet_id;
 			$meta_data['name'] = $google_spreadsheet_name;
 			$meta_data['worksheet'] = $google_spreadsheet_sheet_name;
-			// store the meta data in the cache and any available database, then return the meta data
+			// store the meta data in the memcache and any available database, then return the meta data
 			if($this->memcache) {
 				if($this->namespace!='') {
 					$this->memcache->set("{$this->namespace}.system.google_spreadsheets_by_name.$google_spreadsheet_name", $meta_data);
@@ -818,33 +796,40 @@ class ease_core
 	}
 
 	function load_system_config_var($ease_config_var) {
-		// this function attempts to load a system configuration value from the cache.
-		// if a value isn't found in the cache, the database and EASE configuration will be checked
-		$ease_config_var = preg_replace('/\W+/', '', $ease_config_var);
+		// this function attempts to load a system configuration value from the memcache.
+		// if a value isn't found in the memcache, the database and EASE configuration will be checked
+		$ease_config_var = strtolower(preg_replace('/\W+/', '', $ease_config_var));
 		if($this->memcache) {
 			$cache_value = $this->memcache->get("system.$ease_config_var");
 		} else {
 			$cache_value = false;
 		}
 		if($cache_value!==false) {
-			// a value was found in the cache, use that value and return it
+			// a value was found in the memcache, use that value and return it
 			return $this->config[$ease_config_var] = $cache_value;
 		} else {
-			// a value wasn't found in the cache, check if there is an available database
+			// a value wasn't found in the memcache, check if there is an available database
 			if($this->db) {
-				// a database is available, check if the EASE config in the database has a value set for the requested name
-				$result = $this->db->query("SELECT value FROM ease_config WHERE name='$ease_config_var';");
-				if($result && $row = $result->fetch(PDO::FETCH_ASSOC)) {
-					// a value was found in the database, use that value and set the value in the cache and return it
+				// a database is available, check if the EASE Config in the database has the requested value set
+				$query = $this->db->prepare("SELECT value FROM ease_config WHERE name=:name AND namespace=:namespace;");
+				$params = array(':name'=>$ease_config_var, ':namespace'=>$this->namespace);
+				$result = $query->execute($params);
+				if(!$result) {
+					// the query failed... attempt to add the namespace column then try again
+					$this->db->exec("ALTER TABLE ease_config ADD COLUMN namespace TEXT NOT NULL DEFAULT '';");
+					$result = $query->execute($params);
+				}
+				if($result && $row = $query->fetch(PDO::FETCH_ASSOC)) {
+					// a value was found in the database, use that value and set it in the memcache and return it
 					if($this->memcache) {
 						$this->memcache->set("system.$ease_config_var", $row['value']);
 					}
 					return $this->config[$ease_config_var] = $row['value'];
 				}
 			}
-			// a value wasn't found in an available database, check if the value was set in the EASE config file
+			// a value wasn't found in any database, check if the value was set in the EASE config file
 			if(isset($this->config[$ease_config_var]) && trim($this->config[$ease_config_var])!='') {
-				// a value was found the EASE config file, use that value and set the value in the cache, and in the database, then return it
+				// a value was found the EASE config file, use that value and set the value in the memcache, and in the database, then return it
 				$this->set_system_config_var($ease_config_var, $this->config[$ease_config_var]);
 				return $this->config[$ease_config_var];
 			}
@@ -854,43 +839,66 @@ class ease_core
 	}
 
 	function set_system_config_var($ease_config_var, $value) {
-		$ease_config_var = preg_replace('/\W+/', '', $ease_config_var);
+		$ease_config_var = strtolower(preg_replace('/\W+/', '', $ease_config_var));
 		if($this->memcache) {
 			$this->memcache->set('system.' . $ease_config_var, $value);
 		}
 		if($this->db) {
-			$query = $this->db->prepare("REPLACE INTO ease_config (name, value) VALUES (:name, :value);");
-			$result = $query->execute(array(':name'=>$ease_config_var, ':value'=>$value));
-			if(!$result) {
-				// the query failed... attempt to create the ease_config table, then try again
-				$this->db->exec("	CREATE TABLE ease_config (
-										name VARCHAR(64) NOT NULL PRIMARY KEY,
-										value TEXT NOT NULL DEFAULT ''
-									);	");
-				$query->execute(array(':name'=>$ease_config_var, ':value'=>$value));
+			$query = $this->db->prepare("REPLACE INTO ease_config (name, value, namespace) VALUES (:name, :value, :namespace);");
+			$params = array(':name'=>$ease_config_var, ':value'=>$value, ':namespace'=>$this->namespace);
+			if(!$query->execute($params)) {
+				// the query failed... attempt to add the namespace column then try again
+				$this->db->exec("ALTER TABLE ease_config ADD COLUMN namespace TEXT NOT NULL DEFAULT '';");
+				if(!$query->execute($params)) {
+					// the query failed again.. attempt to create the ease_config table, then try again
+					$this->db->exec("	CREATE TABLE ease_config (
+											name VARCHAR(64) NOT NULL PRIMARY KEY,
+											value TEXT NOT NULL DEFAULT '',
+											namespace TEXT NOT NULL DEFAULT ''
+										);	");
+					$query->execute($params);
+				}
 			}
 		}
 		$this->config[$ease_config_var] = $value;
-
 	}
 
 	function validate_google_access_token($send_full_state=false) {
-		// load connection parameters for the Google Apps API
+		// load connection parameters for the Google API Client
 		$this->load_system_config_var('gapp_client_id');
 		$this->load_system_config_var('gapp_client_secret');
 		$this->load_system_config_var('gapp_access_token_json');
 		$this->load_system_config_var('gapp_access_token');
 		$this->load_system_config_var('gapp_expire_time');
 		$this->load_system_config_var('gapp_refresh_token');
-		// load the Client class definition for the Google Apps API
+		$this->load_system_config_var('gapp_scopes');
+		if((!isset($this->config['gapp_scopes'])) || (trim($this->config['gapp_scopes'])=='')) {
+			// Google API Scopes are not currently configured...
+			// check if an Access Token was already configured
+			if(isset($this->config['gapp_access_token_json']) && (trim($this->config['gapp_access_token_json'])!='')) {
+				// a Google API Access Token was already configured...
+				// this is likely an app that has upgraded from an earlier version of EASE that didn't store the Google API Scopes
+				// set the Google API Scopes to the initial set used by the EASE Framework
+				$this->set_system_config_var('gapp_scopes', 'https://spreadsheets.google.com/feeds https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly');
+			} else {
+				// a Google API Access Token was NOT already configured...
+				// default to the latest set of Google API Scopes used by the EASE Framework
+				$this->set_system_config_var('gapp_scopes', $this->google_api_scopes);
+			}
+		}
+
+		// load the class definition for the Google API Client
 		require_once 'ease/lib/Google/Client.php';
-		// if Access Tokens for the Google Apps API aren't available, offer a button to generate access token through the oauth consent process
+		// check for existing Google API Access Tokens
 		if((!@$this->config['gapp_access_token'] && !@$this->config['gapp_refresh_token']) || !@$this->config['gapp_refresh_token']) {
+			// Google API Access Tokens are NOT available, offer a button to generate them through an OAuth 2.0 consent process
 			$client = new Google_Client();
 			$client->setClientId($this->config['gapp_client_id']);
 			$client->setClientSecret($this->config['gapp_client_secret']);
 			$client->setRedirectUri((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']=='on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . $this->service_endpoints['google_oauth2callback']);
-			$client->setScopes('https://spreadsheets.google.com/feeds https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly');
+			// update the Google API Scopes to the latest set used by the EASE Framework
+			$this->set_system_config_var('gapp_scopes', $this->google_api_scopes);
+			$client->setScopes($this->config['gapp_scopes']);
 			if($send_full_state) {
 				$client->setState(urlencode($_SERVER['REQUEST_URI']));
 			} else {
@@ -930,7 +938,7 @@ class ease_core
 						echo "<b>$key</b>: $value<br />\n";
 						if($key=='error') {
 							if($value=='invalid_client') {
-								// the client was invalid, so wipe the settings in the memcache and DB as they are stale.
+								// the client was invalid, so wipe the settings in the memcache and database as they are stale.
 								// settings will default to those set in easeConfig.json
 								if($this->memcache) {
 									$this->memcache->delete('system.gapp_client_id');
@@ -942,21 +950,9 @@ class ease_core
 									$query->execute(array(':name'=>'gapp_client_secret'));
 								}
 							} elseif($value=='unauthorized_client' || $value=='invalid_grant') {
-								// the access tokens were not for this client, so wipe the tokens from the memcache and DB as they are stale.
-								// the user will be prompted to grant permissions again to link a google drive account
-								if($this->memcache) {
-									$this->memcache->delete('system.gapp_access_token_json');
-									$this->memcache->delete('system.gapp_access_token');
-									$this->memcache->delete('system.gapp_expire_time');
-									$this->memcache->delete('system.gapp_refresh_token');
-								}
-								if($this->db) {
-									$query = $this->db->prepare("DELETE FROM ease_config WHERE name=:name;");
-									$query->execute(array(':name'=>'gapp_access_token_json'));
-									$query->execute(array(':name'=>'gapp_access_token'));
-									$query->execute(array(':name'=>'gapp_expire_time'));
-									$query->execute(array(':name'=>'gapp_refresh_token'));
-								}
+								// the Google API Access Tokens were not for this client, so wipe the settings in the memcache and database
+								// the user will be prompted to grant permissions again to link the app to a google account
+								$this->flush_google_access_tokens();
 							}
 						}
 					}
@@ -966,28 +962,36 @@ class ease_core
 				exit;
 			}
 			if(isset($this->config['google_token_message']) && trim($this->config['google_token_message'])!='') {
-				echo "<div align='center' style='font-family:Arial, Helvetica, sans-serif'>";
 				echo $this->config['google_token_message'];
-				echo "<button onclick='window.location=\"$auth_url\"' style='margin:0px; padding:3px 6px 4px 6px; vertical-align:bottom;'>Next&nbsp;&nbsp;&gt;&gt;</button>";
-				echo "</div>";
+				if(isset($this->config['google_token_button_template']) 
+				  && trim($this->config['google_token_button_template'])!=''
+				  && stripos($this->config['google_token_button_template'], '[google_oauth_url]')!==false) {
+					echo str_ireplace('[google_oauth_url]', $auth_url, $this->config['google_token_button_template']);
+				} else {
+					echo "<button onclick='window.location=\"$auth_url\"' style='margin:0px; padding:3px 6px 4px 6px; vertical-align:bottom;'>Next&nbsp;&nbsp;&gt;&gt;</button>";
+				}
+				if(isset($this->config['google_token_footer'])) {
+					echo $this->config['google_token_footer'];
+				}
 			} else {
-				echo "<div align='center' style='font-family:Arial, Helvetica, sans-serif;'>";
-				echo "<h1 style='margin:0px; padding:0px; margin-bottom:12px;'>Google Drive Setup</h1>";
-				echo "<div style='margin:0px; padding:0px; margin-bottom:10px;'>To use Google Drive Services in this EASE Web App, you need to grant permissions.</div>";
+				echo "<html><body><div align='center' style='font-family:Arial, Helvetica, sans-serif;'>";
+				echo "<h1 style='margin:0px; padding:0px; margin-bottom:12px;'>Google Setup</h1>";
+				echo "<div style='margin:0px; padding:0px; margin-bottom:10px;'>To use Google Services in this EASE Web App, you need to grant permissions.</div>";
 				echo "<div style='margin:0px; padding:0px;'>Click on the next button to redirect to Google to continue. ";
 				echo "<button onclick='window.location=\"$auth_url\"' style='margin:0px; padding:3px 6px 4px 6px; vertical-align:bottom;'>Next&nbsp;&nbsp;&gt;&gt;</button>";
 				echo "</div>";
-				echo "</div>";
+				echo "</div></body></html>";
 			}
 			exit;
 		}
-		// if the google apps access token is expired, refresh it
-		if(@$this->config['gapp_refresh_token'] && (!@$this->config['gapp_access_token_json'] || @$this->globals['system.timestamp']>=@$this->config['gapp_expire_time'])) {
+		// check for an expired Google API Access Token with a Refresh Token
+		if(@$this->config['gapp_refresh_token'] && ((!@$this->config['gapp_access_token_json']) || $_SERVER['REQUEST_TIME']>=@$this->config['gapp_expire_time'])) {
+			// Google API Access Token is expired... refresh it
 			$client = new Google_Client();
 			$client->setClientId($this->config['gapp_client_id']);
 			$client->setClientSecret($this->config['gapp_client_secret']);
 			$client->setRedirectUri((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS']=='on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . $this->service_endpoints['google_oauth2callback']);
-			$client->setScopes('https://spreadsheets.google.com/feeds https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly');
+			$client->setScopes($this->config['gapp_scopes']);
 			$client->setAccessType('offline');
 			$client->setApprovalPrompt('force');
 			if(isset($this->config['elasticache_config_endpoint']) && trim($this->config['elasticache_config_endpoint'])!='') {
@@ -1010,6 +1014,7 @@ class ease_core
 			try {
 				$client->refreshToken($this->config['gapp_refresh_token']);
 			} catch(Google_Auth_Exception $e) {
+				// there was an error refreshing the Google API Access Token
 				if(preg_match('/^(.*?), message: \'(.*?)\'$/is', $e->getMessage(), $matches)) {
 					echo "<h1>$matches[1]</h1><p>\n";
 					$message = json_decode($matches[2]);
@@ -1017,7 +1022,7 @@ class ease_core
 						echo "<b>$key</b>: $value<br />\n";
 						if($key=='error') {
 							if($value=='invalid_client') {
-								// the client was invalid, so wipe the settings in the memcache and DB in case they are stale.
+								// the client was invalid, so wipe the settings in the memcache and database
 								// settings will default to those set in easeConfig.json
 								if($this->memcache) {
 									$this->memcache->delete('system.gapp_client_id');
@@ -1029,8 +1034,8 @@ class ease_core
 									$query->execute(array(':name'=>'gapp_client_secret'));
 								}
 							} elseif($value=='unauthorized_client' || $value=='invalid_grant') {
-								// the tokens access tokens were not for this client, so wipe the settings in the memcache and DB in case they are stale.
-								// the user will be prompted to grant permissions again to link a google drive account
+								// the Google API Access Tokens were not for this client, so wipe the settings in the memcache and database
+								// the user will be prompted to grant permissions again to link a google account
 								$this->flush_google_access_tokens();
 							}
 						}
@@ -1040,29 +1045,18 @@ class ease_core
 				}
 				exit;
 			}
-			$this->config['gapp_access_token_json'] = $client->getAccessToken();
-			$access_token = json_decode($this->config['gapp_access_token_json']);
-			$this->config['gapp_access_token'] = $access_token->access_token;
-			$this->config['gapp_expire_time'] = $this->globals['system.timestamp'] + $access_token->expires_in;
-			if($this->memcache) {
-				$this->memcache->set('system.gapp_access_token_json', $this->config['gapp_access_token_json']);
-				$this->memcache->set('system.gapp_access_token', $this->config['gapp_access_token']);
-				$this->memcache->set('system.gapp_expire_time', $this->config['gapp_expire_time']);
+			$gapp_access_token_json = $client->getAccessToken();
+			$access_token = json_decode($gapp_access_token_json);
+			if($access_token==null) {
+				echo 'Invalid Access Token received while refreshing';
+				exit;
 			}
-			if($this->db) {
-				$query = $this->db->prepare("REPLACE INTO ease_config (name, value) VALUES (:name, :value);");
-				$result = $query->execute(array(':name'=>'gapp_access_token_json', ':value'=>$this->config['gapp_access_token_json']));
-				if(!$result) {
-					// the query failed... attempt to create the ease_config table, then try again
-					$this->db->exec("	CREATE TABLE ease_config (
-											name VARCHAR(64) NOT NULL PRIMARY KEY,
-											value TEXT NOT NULL DEFAULT ''
-										);	");
-					$query->execute(array(':name'=>'gapp_access_token_json', ':value'=>$this->config['gapp_access_token_json']));
-				}
-				$query->execute(array(':name'=>'gapp_access_token', ':value'=>$this->config['gapp_access_token']));
-				$query->execute(array(':name'=>'gapp_expire_time', ':value'=>$this->config['gapp_expire_time']));
-			}
+			// store the refreshed Google API Access Token in the memcache and database
+			$gapp_access_token = $access_token->access_token;
+			$gapp_expire_time = $_SERVER['REQUEST_TIME'] + $access_token->expires_in;
+			$this->set_system_config_var('gapp_access_token_json', $gapp_access_token_json);
+			$this->set_system_config_var('gapp_access_token', $gapp_access_token);
+			$this->set_system_config_var('gapp_expire_time', $gapp_expire_time);
 		}
 	}
 
@@ -1080,13 +1074,19 @@ class ease_core
 			$this->memcache->delete('system.gapp_access_token');
 			$this->memcache->delete('system.gapp_expire_time');
 			$this->memcache->delete('system.gapp_refresh_token');
+			$this->memcache->delete('system.gapp_scopes');
 		}
 		if($this->db) {
-			$query = $this->db->prepare("DELETE FROM ease_config WHERE name=:name;");
-			$query->execute(array(':name'=>'gapp_access_token_json'));
-			$query->execute(array(':name'=>'gapp_access_token'));
-			$query->execute(array(':name'=>'gapp_expire_time'));
-			$query->execute(array(':name'=>'gapp_refresh_token'));
+			$query = $this->db->prepare("DELETE FROM ease_config WHERE name=:name AND namespace=:namespace;");
+			if(!$query->execute(array(':name'=>'gapp_access_token_json', ':namespace'=>$this->namespace))) {
+				// the query failed... attempt to add the namespace column then try again
+				$this->db->exec("ALTER TABLE ease_config ADD COLUMN namespace TEXT NOT NULL DEFAULT '';");
+				$query->execute(array(':name'=>'gapp_access_token_json', ':namespace'=>$this->namespace));
+			}
+			$query->execute(array(':name'=>'gapp_access_token', ':namespace'=>$this->namespace));
+			$query->execute(array(':name'=>'gapp_expire_time', ':namespace'=>$this->namespace));
+			$query->execute(array(':name'=>'gapp_refresh_token', ':namespace'=>$this->namespace));
+			$query->execute(array(':name'=>'gapp_scopes', ':namespace'=>$this->namespace));
 		}
 	}
 
@@ -1101,7 +1101,19 @@ class ease_core
 		// set referring page variables
 		if(isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER']!='') {
 			$referrer_parts = parse_url($_SERVER['HTTP_REFERER']);
-			$this->globals['system.referrer'] = &$_SERVER['HTTP_REFERER'];
+			if(strpos($_SERVER['HTTP_REFERER'], '?')!==false) {
+				// the referring URL includes a "?" character separator before the query string... no need to add one
+				$this->globals['system.referrer'] = &$_SERVER['HTTP_REFERER'];
+			} else {
+				// the referring URL did not include a "?" character
+				// append a "?" character to the end of the URL so adding variables can always be done using a "&" character
+				$this->globals['system.referrer'] = $_SERVER['HTTP_REFERER'] . '?';
+			}
+			if(isset($referrer_parts['query'])) {
+				$this->globals['system.referring_query'] = $referrer_parts['query'];
+			} else {
+				$this->globals['system.referring_query'] = '';
+			}
 			$this->globals['system.referring_scheme'] = strtolower($referrer_parts['scheme']);
 			$this->globals['system.referring_host'] = $referrer_parts['host'] . ((isset($referrer_parts['port']) && $referrer_parts['port']!='') ? ':' . $referrer_parts['port'] : '');
 			$this->globals['system.referring_host_url'] = $referrer_parts['scheme'] . '://' . $this->globals['system.referring_host'];
@@ -1110,6 +1122,7 @@ class ease_core
 			$this->globals['system.https_referring_page'] = 'http' . (($referrer_parts['host']!='localhost') ? 's' : '') . '://' . $this->globals['system.referring_host'] . $referrer_parts['path'];
 		} else {
 			$this->globals['system.referrer'] = '';
+			$this->globals['system.referring_query'] = '';
 			$this->globals['system.referring_scheme'] = '';
 			$this->globals['system.referring_host'] = '';
 			$this->globals['system.referring_host_url'] = '';
@@ -1171,6 +1184,27 @@ class ease_core
 		}
 		echo htmlspecialchars($object);
 		echo '</pre>';
+	}
+
+	function remove_duplicate_url_params(&$url) {
+		$url_parts = parse_url($url);
+		if(isset($url_parts['query']) && trim($url_parts['query'])!='') {
+			// there was a query string, cleanse all duplicate URL params
+			$url_query_parts = array();
+			parse_str($url_parts['query'], $url_query_parts);
+			$url_parts['query'] = http_build_query($url_query_parts);
+			$url = isset($url_parts['scheme']) ? $url_parts['scheme'] . '://' : '';
+			if(isset($url_parts['user']) || isset($url_parts['pass'])) {
+				$url .= isset($url_parts['user']) ? $url_parts['user'] : '';
+				$url .= isset($url_parts['pass']) ? ':' . $url_parts['pass'] : '';
+				$url .= '@';
+			}
+			$url .= isset($url_parts['host']) ? $url_parts['host'] : '';
+			$url .= isset($url_parts['port']) ? ':' . $url_parts['port'] : '';
+			$url .= isset($url_parts['path']) ? $url_parts['path'] : '';
+			$url .= isset($url_parts['query']) ? '?' . $url_parts['query'] : '';
+			$url .= isset($url_parts['fragment']) ? '#' . $url_parts['fragment'] : '';
+		}
 	}
 
 	function send_email($mail_options) {
@@ -1315,6 +1349,67 @@ class ease_core
 				$headers_string .= "$key: $value";
 			}
 			return mail($mail_options['to'], $mail_options['subject'], $body, $headers_string);
+		}
+	}
+
+	function send_gmail($params) {
+		// initialize a Google API client
+		$this->validate_google_access_token();
+		require_once 'ease/lib/Google/Client.php';
+		$client = new Google_Client();
+		$client->setClientId($this->config['gapp_client_id']);
+		$client->setClientSecret($this->config['gapp_client_secret']);
+		$client->setScopes($this->config['gapp_scopes']);
+		$client->setAccessToken($this->config['gapp_access_token_json']);
+		if(isset($this->config['elasticache_config_endpoint']) && trim($this->config['elasticache_config_endpoint'])!='') {
+			// the Google APIs default use of memcache is not supported while using the AWS ElastiCache Cluster Client
+			require_once 'ease/lib/Google/Cache/Null.php';
+			$cache = new Google_Cache_Null($client);
+			$client->setCache($cache);
+		} elseif(isset($this->config['memcache_host']) && trim($this->config['memcache_host'])!='') {
+			// an external memcache host was configured, pass on that configuration to the Google API Client
+			$client->setClassConfig('Google_Cache_Memcache', 'host', $this->config['memcache_host']);
+			if(isset($this->config['memcache_port']) && trim($this->config['memcache_port'])!='') {
+				$client->setClassConfig('Google_Cache_Memcache', 'port', $this->config['memcache_port']);
+			} else {
+				$client->setClassConfig('Google_Cache_Memcache', 'port', 11211);
+			}
+			require_once 'ease/lib/Google/Cache/Memcache.php';
+			$cache = new Google_Cache_Memcache($client);
+			$client->setCache($cache);
+		}
+		require_once 'ease/lib/Google/Service/Gmail.php';
+		$service = new Google_Service_Gmail($client);
+		$message = new Google_Service_Gmail_Message();
+		// build MIME email message
+		$mime_email = "To: {$params['to']}\r\n";
+		if(isset($params['cc']) && trim($params['cc'])!='') {
+			$mime_email .= "Cc: {$params['cc']}\r\n";
+		}
+		if(isset($params['bcc']) && trim($params['bcc'])!='') {
+			$mime_email .= "Bcc: {$params['bcc']}\r\n";
+		}
+		if(isset($params['subject']) && trim($params['subject'])!='') {
+			$mime_email .= "Subject: {$params['subject']}\r\n";
+		}
+		$mime_email .= "MIME-Version: 1.0\r\n";
+		if(isset($params['htmlBody']) && trim($params['htmlBody'])!='') {
+			$mime_email .= "Content-Type: text/html; charset=UTF-8\r\n";
+			$mime_email .= "\r\n{$params['htmlBody']}";
+		} elseif(isset($params['textBody']) && trim($params['textBody'])!='') {
+			$mime_email .= "Content-Type: text/plain; charset=UTF-8\r\n";
+			$mime_email .= "\r\n{$params['textBody']}";
+		} else {
+			// no message body
+			$mime_email .= "\r\n\r\n";
+		}
+        $base64_mime_email = rtrim(strtr(base64_encode($mime_email), '+/', '-_'), '=');
+		$message->setRaw($base64_mime_email);
+		try {
+			return $service->users_messages->send('me', $message);
+		} catch(Exception $e) {
+			// an error occurred
+			echo $e->getMessage();
 		}
 	}
 

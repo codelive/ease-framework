@@ -3,7 +3,7 @@
      * Plugin Name: EASE Framework
      * Plugin URI: http://www.cloudward.com
      * Description: A plugin that makes it easy to generate forms and lists using EASE syntax and Google Spreadsheets
-     * Version: 0.1.6
+     * Version: 0.1.7
      * Author: Cloudward
      * Author URI: http://www.cloudward.com
      * License: GPLv2 or later
@@ -139,7 +139,7 @@
      *
     */
     function ease_admin_load_js_scripts(){
-        wp_enqueue_script('ease_my_script', plugins_url( 'script_helper.js' , __FILE__ ),array(),"0.1.6.525054");
+        wp_enqueue_script('ease_my_script', plugins_url( 'script_helper.js' , __FILE__ ),array(),"0.1.7.180853");
         wp_enqueue_script('ease_my_script1', plugin_dir_url( __FILE__ ) . "static/js/tabslet/jquery.tabslet-custom.js","","",true);
         wp_enqueue_script('ease_my_script2', plugin_dir_url( __FILE__ ) . "static/js/jquery-validation/validation-1.13.0/dist/jquery.validate.js","","",true);
     }
